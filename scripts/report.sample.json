@@ -1,0 +1,28 @@
+{
+  "input_rows": 12,
+  "clean_rows": 1,
+  "rejects": 11,
+  "reject_reasons": [
+    [
+      "no_mx",
+      6
+    ],
+    [
+      "duplicate",
+      2
+    ],
+    [
+      "bad_syntax",
+      1
+    ],
+    [
+      "disposable_domain",
+      1
+    ],
+    [
+      "suppressed",
+      1
+    ]
+  ],
+  "smtp_verified": 0
+}

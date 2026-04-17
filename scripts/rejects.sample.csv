@@ -1,0 +1,12 @@
+email,phone_e164,score,syntax_valid,mx_valid,smtp_valid,is_disposable,is_duplicate,is_suppressed,reject_reason,first_name,last_name,company,icp_segment
+jane.doe@gmail.com,+13105550101,0,True,False,False,False,True,False,duplicate,Jane,Doe,LA Brow Studio,salon
+maria@bellasalonla.com,+12135550150,10,True,False,False,False,False,False,no_mx,Maria,Lopez,Bella Salon LA,salon
+not-an-email,,0,False,False,False,False,False,False,bad_syntax,Broken,Record,,salon
+owner@lashloungesd.com,+18585550199,10,True,False,False,False,False,False,no_mx,Erin,Chen,Lash Lounge SD,salon
+founder@cleanbeautyboutique.co,+14155550111,10,True,False,False,False,False,False,no_mx,Priya,Shah,Clean Beauty Boutique,retailer
+test@mailinator.com,,0,True,False,False,True,False,False,disposable_domain,Trash,Mailer,Fake Co,b2c_beauty
+someone@thisdoesnotexistatall1234567.com,,10,True,False,False,False,False,False,no_mx,No,MX,Nowhere,b2c_beauty
+emma@cosmeticsbyemma.com,+12125550133,10,True,False,False,False,False,False,no_mx,Emma,Ng,Cosmetics by Emma,influencer
+sara@veganbrowbar.com,+16195550170,10,True,False,False,False,False,False,no_mx,Sara,Kim,Vegan Brow Bar,salon
+sara@veganbrowbar.com,+16195550170,0,True,False,False,False,True,False,duplicate,Sara,Kim,Vegan Brow Bar,salon
+unsub@chellacustomer.com,+13105550180,0,True,False,False,False,False,True,suppressed,Existing,Customer,Chella Customer,b2c_beauty

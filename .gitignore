@@ -1,0 +1,8 @@
+﻿# Secrets
+.env*.local
+.DS_Store
+.vercel
+.next
+out
+node_modules
+test-delete.txt

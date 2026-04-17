@@ -1,0 +1,13 @@
+email,phone,first_name,last_name,company,icp_segment
+Jane.Doe+promo@gmail.com,(310) 555-0101,Jane,Doe,LA Brow Studio,salon
+jane.doe@gmail.com,310-555-0101,Jane,Doe,LA Brow Studio,salon
+maria@bellasalonla.com,+1 213 555 0150,Maria,Lopez,Bella Salon LA,salon
+not-an-email,555-0000,Broken,Record,,salon
+owner@lashloungesd.com,858.555.0199,Erin,Chen,Lash Lounge SD,salon
+founder@cleanbeautyboutique.co,+1 415 555 0111,Priya,Shah,Clean Beauty Boutique,retailer
+test@mailinator.com,,Trash,Mailer,Fake Co,b2c_beauty
+someone@thisdoesnotexistatall1234567.com,,No,MX,Nowhere,b2c_beauty
+emma@cosmeticsbyemma.com,+1 212 555 0133,Emma,Ng,Cosmetics by Emma,influencer
+sara@veganbrowbar.com,619-555-0170,Sara,Kim,Vegan Brow Bar,salon
+sara@veganbrowbar.com,619-555-0170,Sara,Kim,Vegan Brow Bar,salon
+unsub@chellacustomer.com,+1 310 555 0180,Existing,Customer,Chella Customer,b2c_beauty

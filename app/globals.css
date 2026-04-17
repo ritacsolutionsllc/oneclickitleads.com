@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --brand: 16 185 129; /* emerald-500 for clean/vegan vibe */
+  --ink: 17 24 39;
+}
+
+html { scroll-behavior: smooth; }

@@ -1,0 +1,2 @@
+email,phone_e164,score,syntax_valid,mx_valid,smtp_valid,is_disposable,is_duplicate,is_suppressed,reject_reason,first_name,last_name,company,icp_segment
+jane.doe@gmail.com,+13105550101,60,True,True,False,False,False,False,,Jane,Doe,LA Brow Studio,salon
