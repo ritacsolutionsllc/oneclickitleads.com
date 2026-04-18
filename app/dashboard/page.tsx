@@ -2,10 +2,11 @@ import { createClient } from '@/utils/supabase/server';
 import Link from 'next/link';
 import { planByTier } from '@/lib/plans';
 
-type SP = { searchParams: { client?: string; upgraded?: string; tier?: string } };
+type SP = { searchParams: Promise<{ client?: string; upgraded?: string; tier?: string }> };
 
 export default async function Overview({ searchParams }: SP) {
-  const supabase = createClient();
+  const sp = await searchParams;
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null; // layout redirects
 
@@ -15,7 +16,7 @@ export default async function Overview({ searchParams }: SP) {
     .eq('owner_user', user.id)
     .order('created_at');
 
-  const active = (clients ?? []).find((c) => c.slug === searchParams.client) ?? clients?.[0];
+  const active = (clients ?? []).find((c) => c.slug === sp.client) ?? clients?.[0];
   if (!active) {
     return (
       <EmptyState title="Create your first client" body="Use the '+ Create' button in the top nav to spin up your first tenant. Then you can start scraping, importing, and pushing leads." />
@@ -39,9 +40,9 @@ export default async function Overview({ searchParams }: SP) {
 
   return (
     <div>
-      {searchParams.upgraded && (
+      {sp.upgraded && (
         <div className="mb-6 rounded-xl border border-emerald-300 bg-emerald-50 px-5 py-4 text-emerald-900">
-          Subscription active — you're on the <strong>{searchParams.tier ?? 'new'}</strong> plan. 14-day trial running.
+          Subscription active — you're on the <strong>{sp.tier ?? 'new'}</strong> plan. 14-day trial running.
         </div>
       )}
 

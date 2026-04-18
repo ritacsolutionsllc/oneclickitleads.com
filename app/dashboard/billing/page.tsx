@@ -4,8 +4,9 @@ import { planByTier, displayPlans, PLANS } from '@/lib/plans';
 import PortalButton from '@/components/PortalButton';
 import SubscribeButton from '@/components/SubscribeButton';
 
-export default async function BillingPage({ searchParams }: { searchParams: { client?: string } }) {
-  const supabase = createClient();
+export default async function BillingPage({ searchParams }: { searchParams: Promise<{ client?: string }> }) {
+  const sp = await searchParams;
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
 
@@ -13,7 +14,7 @@ export default async function BillingPage({ searchParams }: { searchParams: { cl
     .from('clients')
     .select('id, slug, name, plan, stripe_customer_id, stripe_subscription_id, plan_current_period_end')
     .eq('owner_user', user.id);
-  const active = (clients ?? []).find((c) => c.slug === searchParams.client) ?? clients?.[0];
+  const active = (clients ?? []).find((c) => c.slug === sp.client) ?? clients?.[0];
   if (!active) return <div className="text-neutral-500">Create a client first.</div>;
 
   const plan = planByTier(active.plan);

@@ -1,17 +1,18 @@
 import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
 
-export default function SubmitLead({
+export default async function SubmitLead({
   searchParams,
 }: {
-  searchParams: { client?: string };
+  searchParams: Promise<{ client?: string }>;
 }) {
+  const sp = await searchParams;
   async function submit(formData: FormData) {
     'use server';
-    const supabase = createClient();
+    const supabase = await createClient();
 
     // Look up client by slug (from ?client=chella)
-    const slug = (formData.get('client_slug') as string) || searchParams.client || '';
+    const slug = (formData.get('client_slug') as string) || sp.client || '';
     const { data: client } = await supabase
       .from('clients')
       .select('id')
@@ -51,7 +52,7 @@ export default function SubmitLead({
         <input
           type="hidden"
           name="client_slug"
-          defaultValue={searchParams.client ?? 'chella'}
+          defaultValue={sp.client ?? 'chella'}
         />
 
         <div className="grid grid-cols-2 gap-4">
