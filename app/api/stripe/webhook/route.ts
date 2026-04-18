@@ -3,7 +3,7 @@ import Stripe from 'stripe';
 import { createAdminClient } from '@/utils/supabase/server';
 import { tierForStripePriceId, PlanTier } from '@/lib/plans';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-09-30.acacia' });
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-02-24.acacia' });
 
 /**
  * Webhook responsibilities:

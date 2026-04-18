@@ -12,7 +12,7 @@ import { planByTier } from '@/lib/plans';
  * - Writes an `exports` row for audit.
  */
 export async function GET(req: NextRequest) {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { searchParams } = new URL(req.url);
   const clientSlug = searchParams.get('client');
   const format = searchParams.get('format') ?? 'csv';
