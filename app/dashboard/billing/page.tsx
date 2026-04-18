@@ -115,7 +115,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
           <div className="font-semibold">Need more than 60k leads/month, white-label, or SSO?</div>
           <div className="text-sm text-neutral-300 mt-1">We'll spin up a custom plan with a DPA + dedicated onboarding.</div>
         </div>
-        <a href="mailto:sales@oneclickitleads.com" className="rounded-full bg-emerald-500 text-black px-4 py-2 text-sm font-medium hover:bg-emerald-400">
+        <a href="mailto:contact@oneclickit.ai" className="rounded-full bg-emerald-500 text-black px-4 py-2 text-sm font-medium hover:bg-emerald-400">
           Talk to sales
         </a>
       </div>
