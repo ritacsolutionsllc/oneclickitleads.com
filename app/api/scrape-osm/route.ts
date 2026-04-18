@@ -24,6 +24,9 @@ function isOsmKey(v: string): v is OsmKey {
 // handful of punctuation that shows up in real place/shop names. Anything else
 // (especially ", \, ], ;) could break out of the query context.
 const SAFE_TEXT = /^[A-Za-z0-9 \-_.'&:/]+$/;
+// Slug, segment, region, country are stored in the DB / used as lookup keys —
+// keep these to URL-safe identifier characters.
+const SAFE_SLUG = /^[A-Za-z0-9_-]+$/;
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -46,6 +49,18 @@ export async function GET(request: Request) {
   }
   if (!SAFE_TEXT.test(shop) || shop.length > 40) {
     return NextResponse.json({ error: 'invalid shop' }, { status: 400 });
+  }
+  if (!SAFE_SLUG.test(clientSlug) || clientSlug.length > 64) {
+    return NextResponse.json({ error: 'invalid client' }, { status: 400 });
+  }
+  if (!SAFE_SLUG.test(segment) || segment.length > 32) {
+    return NextResponse.json({ error: 'invalid segment' }, { status: 400 });
+  }
+  if (!SAFE_TEXT.test(region) || region.length > 40) {
+    return NextResponse.json({ error: 'invalid region' }, { status: 400 });
+  }
+  if (!SAFE_TEXT.test(country) || country.length > 40) {
+    return NextResponse.json({ error: 'invalid country' }, { status: 400 });
   }
   const osmKey: OsmKey = rawKey;
 
