@@ -4,7 +4,9 @@ import { createAdminClient } from '@/utils/supabase/server';
 import { tierForStripePriceId, PlanTier } from '@/lib/plans';
 
 function getStripe() {
-  return new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-02-24.acacia' });
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) throw new Error('STRIPE_SECRET_KEY is not set');
+  return new Stripe(key, { apiVersion: '2025-02-24.acacia' });
 }
 
 /**
