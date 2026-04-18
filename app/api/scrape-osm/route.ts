@@ -14,6 +14,17 @@ import { scrubBatch } from '@/utils/scrub/pipeline';
  * Useful `shop` values for Chella's ICP: beauty, hairdresser, cosmetics.
  * Also accepts amenity/craft via ?type=amenity&kind=clinic etc.
  */
+const OSM_KEYS = ['shop', 'amenity', 'craft'] as const;
+type OsmKey = (typeof OSM_KEYS)[number];
+function isOsmKey(v: string): v is OsmKey {
+  return (OSM_KEYS as readonly string[]).includes(v);
+}
+
+// Overpass QL strings are quoted with ". Allow letters, numbers, spaces, and a
+// handful of punctuation that shows up in real place/shop names. Anything else
+// (especially ", \, ], ;) could break out of the query context.
+const SAFE_TEXT = /^[A-Za-z0-9 \-_.'&:/]+$/;
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const clientSlug = searchParams.get('client') || 'chella';
@@ -22,8 +33,21 @@ export async function GET(request: Request) {
   const city = searchParams.get('city') || 'Los Angeles';
   const region = searchParams.get('region') || 'CA';
   const country = searchParams.get('country') || 'US';
-  // 'shop', 'amenity', or 'craft' — the three OSM keys businesses live under.
-  const osmKey = (searchParams.get('type') || 'shop') as 'shop' | 'amenity' | 'craft';
+  const rawKey = searchParams.get('type') || 'shop';
+
+  if (!isOsmKey(rawKey)) {
+    return NextResponse.json(
+      { error: `invalid type: must be one of ${OSM_KEYS.join(', ')}` },
+      { status: 400 }
+    );
+  }
+  if (!SAFE_TEXT.test(city) || city.length > 80) {
+    return NextResponse.json({ error: 'invalid city' }, { status: 400 });
+  }
+  if (!SAFE_TEXT.test(shop) || shop.length > 40) {
+    return NextResponse.json({ error: 'invalid shop' }, { status: 400 });
+  }
+  const osmKey: OsmKey = rawKey;
 
   const areaQuery = `area["name"="${city}"]["admin_level"~"6|7|8"]->.a;`;
   const query = `

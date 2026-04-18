@@ -37,7 +37,19 @@ export async function DELETE(req: NextRequest) {
   const id = req.nextUrl.searchParams.get('id');
   if (!id) return NextResponse.json({ error: 'id required' }, { status: 400 });
 
-  const { error } = await supabase.from('webhooks').delete().eq('id', id);
+  // Explicit ownership check in addition to RLS: confirm the webhook's
+  // client belongs to the caller before deleting.
+  const admin = createAdminClient();
+  const { data: hook } = await admin
+    .from('webhooks')
+    .select('id, client_id, clients:client_id(owner_user)')
+    .eq('id', id)
+    .single<{ id: string; client_id: string; clients: { owner_user: string } | null }>();
+  if (!hook || hook.clients?.owner_user !== user.id) {
+    return NextResponse.json({ error: 'not found' }, { status: 404 });
+  }
+
+  const { error } = await admin.from('webhooks').delete().eq('id', id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ deleted: id });
 }

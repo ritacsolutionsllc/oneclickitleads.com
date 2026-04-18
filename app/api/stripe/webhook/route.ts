@@ -29,11 +29,14 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'STRIPE_WEBHOOK_SECRET is not set' }, { status: 500 });
   }
   const sig = req.headers.get('stripe-signature');
+  if (!sig) {
+    return NextResponse.json({ error: 'missing stripe-signature header' }, { status: 400 });
+  }
   const body = await req.text();
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(body, sig!, webhookSecret);
+    event = stripe.webhooks.constructEvent(body, sig, webhookSecret);
   } catch (err) {
     return NextResponse.json({ error: `signature: ${(err as Error).message}` }, { status: 400 });
   }
