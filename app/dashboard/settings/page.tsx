@@ -3,14 +3,15 @@ import ApiKeyManager from '@/components/ApiKeyManager';
 import WebhookManager from '@/components/WebhookManager';
 import { planByTier } from '@/lib/plans';
 
-export default async function SettingsPage({ searchParams }: { searchParams: { client?: string } }) {
-  const supabase = createClient();
+export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ client?: string }> }) {
+  const sp = await searchParams;
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
 
   const { data: clients } = await supabase
     .from('clients').select('id, slug, name, plan').eq('owner_user', user.id);
-  const active = (clients ?? []).find((c) => c.slug === searchParams.client) ?? clients?.[0];
+  const active = (clients ?? []).find((c) => c.slug === sp.client) ?? clients?.[0];
   if (!active) return <div className="text-neutral-500">Create a client first.</div>;
 
   const plan = planByTier(active.plan);
