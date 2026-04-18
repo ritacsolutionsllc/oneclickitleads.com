@@ -3,70 +3,98 @@ import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
 
 /**
- * GET /api/places-salons?query=salon+Los+Angeles,CA&client=chella
+ * GET /api/places-salons?query=eyebrow+salon+Los+Angeles+CA&client=chella&segment=salon
  *
- * Pulls salon businesses from Google Places (Text Search), paginates up to 60
- * results (3 pages x 20), dedupes by phone/address, and ingests into leads.
+ * Pulls businesses from Google Places API (New) Text Search. Uses a single
+ * POST with a FieldMask so we get phone, website, address components, types
+ * and opening hours in one round-trip (the legacy Text Search endpoint did
+ * NOT return phone/website, which silently broke the scraper).
  *
- * This is the primary B2B scraper for Chella (vegan beauty → brow/lash salons).
- *
- * Cost control: field mask keeps calls at the cheap tier
- * (~$17/1k after $200 free credit).
+ * Paginates up to 3 pages (60 results). Dedupes by Google place_id and
+ * feeds rows through the scrub pipeline.
  */
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const query = searchParams.get('query') || 'eyebrow salon Los Angeles CA';
   const clientSlug = searchParams.get('client') || 'chella';
+  const segment = searchParams.get('segment') || 'salon';
   const key = process.env.GOOGLE_PLACES_KEY;
   if (!key) return NextResponse.json({ error: 'missing GOOGLE_PLACES_KEY' }, { status: 500 });
 
-  const results: GooglePlace[] = [];
-  let pageToken: string | null = null;
+  const fieldMask = [
+    'places.id',
+    'places.displayName',
+    'places.formattedAddress',
+    'places.addressComponents',
+    'places.nationalPhoneNumber',
+    'places.internationalPhoneNumber',
+    'places.websiteUri',
+    'places.rating',
+    'places.userRatingCount',
+    'places.businessStatus',
+    'places.types',
+    'places.primaryType',
+    'places.regularOpeningHours',
+    'nextPageToken',
+  ].join(',');
+
+  const results: PlaceV1[] = [];
+  let pageToken: string | undefined;
   let guard = 0;
   do {
-    const params = new URLSearchParams({
-      query,
-      key,
-      fields:
-        'business_status,name,formatted_address,formatted_phone_number,website,rating,user_ratings_total',
+    const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': key,
+        'X-Goog-FieldMask': fieldMask,
+      },
+      body: JSON.stringify({
+        textQuery: query,
+        pageSize: 20,
+        ...(pageToken ? { pageToken } : {}),
+      }),
     });
-    if (pageToken) params.append('pagetoken', pageToken);
-
-    const r = await fetch(
-      `https://maps.googleapis.com/maps/api/place/textsearch/json?${params}`
-    );
-    const data = (await r.json()) as {
-      status: string;
-      results: GooglePlace[];
-      next_page_token?: string;
-    };
-    if (data.status !== 'OK' && data.status !== 'ZERO_RESULTS') {
-      return NextResponse.json({ error: data.status }, { status: 400 });
+    if (!resp.ok) {
+      const body = await resp.text();
+      return NextResponse.json(
+        { error: `places v1: HTTP ${resp.status}`, detail: body.slice(0, 500) },
+        { status: 502 }
+      );
     }
-    results.push(...(data.results ?? []));
-    pageToken = data.next_page_token ?? null;
-    if (pageToken) await new Promise((r) => setTimeout(r, 2000)); // Google requires a short delay
+    const data = (await resp.json()) as { places?: PlaceV1[]; nextPageToken?: string };
+    results.push(...(data.places ?? []));
+    pageToken = data.nextPageToken;
+    if (pageToken) await new Promise((r) => setTimeout(r, 2000));
     guard++;
   } while (pageToken && guard < 3);
 
-  // Turn Places results into raw leads (phone-only; emails enriched later via Hunter).
   const rows = results
-    .filter((p) => p.business_status === 'OPERATIONAL')
-    .map((p) => ({
-      company: p.name,
-      phone: p.formatted_phone_number,
-      // We don't have emails yet — enrichment layer will try Hunter on the domain from website.
-      email: undefined,
-      title: 'Owner / Manager',
-      icp_segment: 'salon',
-      city: extractCity(p.formatted_address),
-      region: extractRegion(p.formatted_address),
-      country: 'US',
-      tags: ['google_places', 'salon'],
-      source_url: p.website ?? undefined,
-      raw_rating: p.rating,
-      raw_rating_count: p.user_ratings_total,
-    }));
+    .filter((p) => p.businessStatus === 'OPERATIONAL')
+    .map((p) => {
+      const city = componentOf(p.addressComponents, ['locality', 'postal_town']);
+      const region = componentShortOf(p.addressComponents, [
+        'administrative_area_level_1',
+      ]);
+      const country = componentShortOf(p.addressComponents, ['country']) ?? 'US';
+      return {
+        company: p.displayName?.text,
+        phone: p.nationalPhoneNumber || p.internationalPhoneNumber,
+        email: undefined,
+        title: 'Owner / Manager',
+        icp_segment: segment,
+        city,
+        region,
+        country,
+        tags: ['google_places', segment, ...(p.types ?? [])].slice(0, 10),
+        source_url: p.websiteUri,
+        place_id: p.id,
+        primary_type: p.primaryType,
+        opening_hours: p.regularOpeningHours?.weekdayDescriptions,
+        raw_rating: p.rating,
+        raw_rating_count: p.userRatingCount,
+      };
+    });
 
   const supabase = createAdminClient();
   const { data: client } = await supabase
@@ -79,7 +107,7 @@ export async function GET(request: Request) {
       client_id: client.id,
       kind: 'scraped',
       label: `google_places: ${query}`,
-      source_url: 'https://maps.googleapis.com/maps/api/place/textsearch/json',
+      source_url: 'https://places.googleapis.com/v1/places:searchText',
     })
     .select('id').single();
 
@@ -113,32 +141,46 @@ export async function GET(request: Request) {
   return NextResponse.json({
     query,
     fetched: results.length,
+    with_phone: rows.filter((r) => r.phone).length,
+    with_website: rows.filter((r) => r.source_url).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
     error: error?.message,
   });
 }
 
-interface GooglePlace {
-  business_status?: string;
-  name: string;
-  formatted_address?: string;
-  formatted_phone_number?: string;
-  website?: string;
+interface AddressComponent {
+  longText?: string;
+  shortText?: string;
+  types?: string[];
+}
+
+interface PlaceV1 {
+  id?: string;
+  displayName?: { text?: string; languageCode?: string };
+  formattedAddress?: string;
+  addressComponents?: AddressComponent[];
+  nationalPhoneNumber?: string;
+  internationalPhoneNumber?: string;
+  websiteUri?: string;
   rating?: number;
-  user_ratings_total?: number;
+  userRatingCount?: number;
+  businessStatus?: string;
+  types?: string[];
+  primaryType?: string;
+  regularOpeningHours?: { weekdayDescriptions?: string[] };
 }
 
-function extractCity(addr?: string) {
-  if (!addr) return undefined;
-  const parts = addr.split(',').map((s) => s.trim());
-  return parts.length >= 3 ? parts[parts.length - 3] : undefined;
+function componentOf(comps: AddressComponent[] | undefined, wantedTypes: string[]) {
+  for (const c of comps ?? []) {
+    if (c.types?.some((t) => wantedTypes.includes(t))) return c.longText;
+  }
+  return undefined;
 }
 
-function extractRegion(addr?: string) {
-  if (!addr) return undefined;
-  const parts = addr.split(',').map((s) => s.trim());
-  // "Los Angeles, CA 90001, USA" → region = "CA"
-  const penultimate = parts[parts.length - 2];
-  return penultimate?.split(' ')[0];
+function componentShortOf(comps: AddressComponent[] | undefined, wantedTypes: string[]) {
+  for (const c of comps ?? []) {
+    if (c.types?.some((t) => wantedTypes.includes(t))) return c.shortText ?? c.longText;
+  }
+  return undefined;
 }

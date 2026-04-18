@@ -96,8 +96,10 @@ export async function POST(req: NextRequest) {
         users,
       };
 
+  // Both shapes are POSTs: create audience = POST /custom_audiences;
+  // append to existing = POST /custom_audiences/:id/users.
   const resp = await fetch(url, {
-    method: audience_id ? 'POST' : 'POST',
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',

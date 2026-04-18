@@ -7,7 +7,7 @@ import { createClient, createAdminClient } from '@/utils/supabase/server';
  * the INGEST_SECRET server-side so we never expose it to the browser.
  */
 export async function POST(req: NextRequest) {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 

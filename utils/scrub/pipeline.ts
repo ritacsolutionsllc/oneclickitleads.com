@@ -52,16 +52,26 @@ export async function scrubBatch(
   const supEmails = new Set((sup ?? []).map((s: { email: string | null }) => s.email?.toLowerCase()).filter(Boolean));
   const supPhones = new Set((sup ?? []).map((s: { phone: string | null }) => s.phone).filter(Boolean));
 
-  // 2. pull existing email hashes for dedupe
+  // 2. pull existing email hashes + phone numbers for dedupe
   const { data: existing } = await supabase
     .from('leads')
-    .select('email_hash')
+    .select('email_hash, phone_e164')
     .eq('client_id', clientId);
-  const existingHashes = new Set((existing ?? []).map((r: { email_hash: string }) => r.email_hash));
+  const existingHashes = new Set(
+    (existing ?? [])
+      .map((r: { email_hash: string | null }) => r.email_hash)
+      .filter((h): h is string => !!h)
+  );
+  const existingPhones = new Set(
+    (existing ?? [])
+      .map((r: { phone_e164: string | null }) => r.phone_e164)
+      .filter((p): p is string => !!p)
+  );
 
   // 3. process each row
   const results: ScrubbedLead[] = [];
-  const seenInBatch = new Set<string>();
+  const seenEmails = new Set<string>();
+  const seenPhones = new Set<string>();
 
   for (const row of rows) {
     const emailRaw = row.email ?? '';
@@ -74,11 +84,14 @@ export async function scrubBatch(
       (phoneE164 && supPhones.has(phoneE164)) ||
       false;
 
-    // dedupe: hash of normalized email
-    const hash = await sha256(normalized || '');
-    const isDuplicate =
-      (!!normalized && (existingHashes.has(hash) || seenInBatch.has(hash)));
-    if (normalized) seenInBatch.add(hash);
+    // Dedupe on email hash OR phone (E.164). A row with a phone-only match
+    // against an existing phone-only lead is still a dup.
+    const hash = normalized ? await sha256(normalized) : '';
+    const emailDup = !!hash && (existingHashes.has(hash) || seenEmails.has(hash));
+    const phoneDup = !!phoneE164 && (existingPhones.has(phoneE164) || seenPhones.has(phoneE164));
+    const isDuplicate = emailDup || phoneDup;
+    if (hash) seenEmails.add(hash);
+    if (phoneE164) seenPhones.add(phoneE164);
 
     let enrichedFields = {};
     if (

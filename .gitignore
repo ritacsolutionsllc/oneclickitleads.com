@@ -6,3 +6,4 @@
 out
 node_modules
 test-delete.txt
+tsconfig.tsbuildinfo

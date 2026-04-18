@@ -3,29 +3,30 @@ import Link from 'next/link';
 import PushToSmartlyForm from '@/components/PushToSmartlyForm';
 
 type SP = {
-  searchParams: {
+  searchParams: Promise<{
     client?: string;
     segment?: string;
     scrubbed?: string;
     page?: string;
     q?: string;
     minScore?: string;
-  };
+  }>;
 };
 
 const PAGE_SIZE = 50;
 
 export default async function LeadsPage({ searchParams }: SP) {
-  const supabase = createClient();
+  const sp = await searchParams;
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
 
   const { data: clients } = await supabase
     .from('clients').select('id, slug, name, plan').eq('owner_user', user.id);
-  const active = (clients ?? []).find((c) => c.slug === searchParams.client) ?? clients?.[0];
+  const active = (clients ?? []).find((c) => c.slug === sp.client) ?? clients?.[0];
   if (!active) return <div className="text-neutral-500">Create a client first.</div>;
 
-  const page = Math.max(1, Number(searchParams.page ?? 1));
+  const page = Math.max(1, Number(sp.page ?? 1));
   const from = (page - 1) * PAGE_SIZE;
   const to = from + PAGE_SIZE - 1;
 
@@ -37,12 +38,12 @@ export default async function LeadsPage({ searchParams }: SP) {
     )
     .eq('client_id', active.id);
 
-  if (searchParams.segment) q = q.eq('icp_segment', searchParams.segment);
-  if (searchParams.scrubbed === '1') q = q.eq('is_scrubbed', true);
-  if (searchParams.scrubbed === '0') q = q.eq('is_scrubbed', false);
-  if (searchParams.minScore) q = q.gte('scrub_score', Number(searchParams.minScore));
-  if (searchParams.q) {
-    const term = searchParams.q;
+  if (sp.segment) q = q.eq('icp_segment', sp.segment);
+  if (sp.scrubbed === '1') q = q.eq('is_scrubbed', true);
+  if (sp.scrubbed === '0') q = q.eq('is_scrubbed', false);
+  if (sp.minScore) q = q.gte('scrub_score', Number(sp.minScore));
+  if (sp.q) {
+    const term = sp.q;
     q = q.or(`email.ilike.%${term}%,company.ilike.%${term}%,first_name.ilike.%${term}%,last_name.ilike.%${term}%`);
   }
 
@@ -57,10 +58,10 @@ export default async function LeadsPage({ searchParams }: SP) {
   // Preserve current filters across links
   const baseParams = new URLSearchParams();
   baseParams.set('client', active.slug);
-  if (searchParams.segment) baseParams.set('segment', searchParams.segment);
-  if (searchParams.scrubbed) baseParams.set('scrubbed', searchParams.scrubbed);
-  if (searchParams.minScore) baseParams.set('minScore', searchParams.minScore);
-  if (searchParams.q) baseParams.set('q', searchParams.q);
+  if (sp.segment) baseParams.set('segment', sp.segment);
+  if (sp.scrubbed) baseParams.set('scrubbed', sp.scrubbed);
+  if (sp.minScore) baseParams.set('minScore', sp.minScore);
+  if (sp.q) baseParams.set('q', sp.q);
   const pageLink = (p: number) => {
     const u = new URLSearchParams(baseParams);
     u.set('page', String(p));
@@ -68,8 +69,8 @@ export default async function LeadsPage({ searchParams }: SP) {
   };
 
   const exportLink = `/api/export?client=${active.slug}&format=csv${
-    searchParams.segment ? `&segment=${searchParams.segment}` : ''
-  }${searchParams.minScore ? `&min_score=${searchParams.minScore}` : ''}`;
+    sp.segment ? `&segment=${sp.segment}` : ''
+  }${sp.minScore ? `&min_score=${sp.minScore}` : ''}`;
 
   return (
     <div>
@@ -90,18 +91,18 @@ export default async function LeadsPage({ searchParams }: SP) {
         <input type="hidden" name="client" value={active.slug} />
         <input
           name="q"
-          defaultValue={searchParams.q ?? ''}
+          defaultValue={sp.q ?? ''}
           placeholder="Search email, company, name"
           className="md:col-span-2 rounded-lg border border-neutral-300 px-3 py-2 text-sm"
         />
-        <select name="segment" defaultValue={searchParams.segment ?? ''} className="rounded-lg border border-neutral-300 px-3 py-2 text-sm">
+        <select name="segment" defaultValue={sp.segment ?? ''} className="rounded-lg border border-neutral-300 px-3 py-2 text-sm">
           <option value="">All segments</option>
           <option value="b2c_beauty">b2c_beauty</option>
           <option value="salon">salon</option>
           <option value="influencer">influencer</option>
           <option value="retailer">retailer</option>
         </select>
-        <select name="scrubbed" defaultValue={searchParams.scrubbed ?? ''} className="rounded-lg border border-neutral-300 px-3 py-2 text-sm">
+        <select name="scrubbed" defaultValue={sp.scrubbed ?? ''} className="rounded-lg border border-neutral-300 px-3 py-2 text-sm">
           <option value="">Any status</option>
           <option value="1">Scrubbed only</option>
           <option value="0">Rejected only</option>
@@ -112,7 +113,7 @@ export default async function LeadsPage({ searchParams }: SP) {
             type="number"
             min={0}
             max={100}
-            defaultValue={searchParams.minScore ?? ''}
+            defaultValue={sp.minScore ?? ''}
             placeholder="Min score"
             className="flex-1 rounded-lg border border-neutral-300 px-3 py-2 text-sm"
           />
