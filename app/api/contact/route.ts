@@ -21,6 +21,13 @@ function getResend() {
   return new Resend(key);
 }
 
+const DSAR_TYPES = ['access', 'delete', 'correct', 'optout'] as const;
+type DsarType = (typeof DSAR_TYPES)[number];
+
+function isDsarType(v: unknown): v is DsarType {
+  return typeof v === 'string' && (DSAR_TYPES as readonly string[]).includes(v);
+}
+
 function isEmail(s: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 }
@@ -50,7 +57,7 @@ export async function POST(req: Request) {
   const subject = (body.subject ?? '').trim().slice(0, 200);
   const message = (body.message ?? '').trim().slice(0, 5000);
   const kind = body.kind === 'dsar' ? 'dsar' : 'contact';
-  const dsarType = body.dsarType;
+  const dsarType: DsarType | undefined = isDsarType(body.dsarType) ? body.dsarType : undefined;
 
   if (!email || !isEmail(email)) {
     return NextResponse.json({ error: 'valid email required' }, { status: 400 });
@@ -59,7 +66,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'message required' }, { status: 400 });
   }
   if (kind === 'dsar' && !dsarType) {
-    return NextResponse.json({ error: 'dsarType required for DSAR' }, { status: 400 });
+    return NextResponse.json(
+      { error: `dsarType must be one of: ${DSAR_TYPES.join(', ')}` },
+      { status: 400 },
+    );
   }
 
   const subjectLine =
