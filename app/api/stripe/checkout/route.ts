@@ -3,7 +3,9 @@ import Stripe from 'stripe';
 import { createClient } from '@/utils/supabase/server';
 import { PLANS, PlanTier, stripePriceFor } from '@/lib/plans';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-02-24.acacia' });
+function getStripe() {
+  return new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-02-24.acacia' });
+}
 
 /**
  * POST /api/stripe/checkout
@@ -46,7 +48,7 @@ export async function POST(req: Request) {
     .eq('owner_user', user.id)
     .maybeSingle();
 
-  const session = await stripe.checkout.sessions.create({
+  const session = await getStripe().checkout.sessions.create({
     mode: 'subscription',
     customer: client?.stripe_customer_id ?? undefined,
     customer_email: client?.stripe_customer_id ? undefined : user.email ?? undefined,
