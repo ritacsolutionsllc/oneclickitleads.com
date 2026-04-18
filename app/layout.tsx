@@ -1,5 +1,6 @@
 import './globals.css';
 import type { Metadata } from 'next';
+import { Analytics } from '@vercel/analytics/next';
 
 export const metadata: Metadata = {
   title: 'OneClickitLeads — Clean, scrubbed leads for performance marketing',
@@ -10,7 +11,10 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="bg-neutral-50 text-neutral-900 antialiased">{children}</body>
+      <body className="bg-neutral-50 text-neutral-900 antialiased">
+        {children}
+        <Analytics />
+      </body>
     </html>
   );
 }
