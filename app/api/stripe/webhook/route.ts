@@ -3,7 +3,9 @@ import Stripe from 'stripe';
 import { createAdminClient } from '@/utils/supabase/server';
 import { tierForStripePriceId, PlanTier } from '@/lib/plans';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-02-24.acacia' });
+function getStripe() {
+  return new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-02-24.acacia' });
+}
 
 /**
  * Webhook responsibilities:
@@ -19,6 +21,7 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-02
  * has no user session.
  */
 export async function POST(req: Request) {
+  const stripe = getStripe();
   const sig = req.headers.get('stripe-signature');
   const body = await req.text();
 
