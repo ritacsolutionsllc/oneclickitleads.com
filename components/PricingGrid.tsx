@@ -16,7 +16,7 @@ export default function PricingGrid({ compact = false }: { compact?: boolean }) 
 
   async function checkout(plan: Plan) {
     if (!plan.selfServe) {
-      window.location.href = `mailto:sales@oneclickitleads.com?subject=Enterprise%20inquiry`;
+      window.location.href = `mailto:contact@oneclickit.ai?subject=Enterprise%20inquiry`;
       return;
     }
     setLoading(plan.tier);

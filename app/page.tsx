@@ -121,7 +121,8 @@ export default function Landing() {
           <div className="flex gap-6">
             <Link href="/privacy">Privacy</Link>
             <Link href="/data-request">Data request</Link>
-            <a href="mailto:hello@oneclickitleads.com">Contact</a>
+            <Link href="/contact">Contact</Link>
+            <a href="mailto:contact@oneclickit.ai">contact@oneclickit.ai</a>
           </div>
         </div>
       </footer>

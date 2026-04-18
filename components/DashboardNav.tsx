@@ -10,6 +10,7 @@ const LINKS = [
   { href: '/dashboard/exports',      label: 'Exports',     icon: '↗' },
   { href: '/dashboard/billing',      label: 'Billing',     icon: '$' },
   { href: '/dashboard/settings',     label: 'Settings',    icon: '⚙' },
+  { href: '/contact',                label: 'Support',     icon: '?' },
 ];
 
 export default function DashboardNav() {

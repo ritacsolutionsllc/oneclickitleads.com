@@ -4,7 +4,9 @@ import { createAdminClient } from '@/utils/supabase/server';
 import { tierForStripePriceId, PlanTier } from '@/lib/plans';
 
 function getStripe() {
-  return new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2025-02-24.acacia' });
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) throw new Error('STRIPE_SECRET_KEY is not set');
+  return new Stripe(key, { apiVersion: '2025-02-24.acacia' });
 }
 
 /**
@@ -22,12 +24,16 @@ function getStripe() {
  */
 export async function POST(req: Request) {
   const stripe = getStripe();
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!webhookSecret) {
+    return NextResponse.json({ error: 'STRIPE_WEBHOOK_SECRET is not set' }, { status: 500 });
+  }
   const sig = req.headers.get('stripe-signature');
   const body = await req.text();
 
   let event: Stripe.Event;
   try {
-    event = stripe.webhooks.constructEvent(body, sig!, process.env.STRIPE_WEBHOOK_SECRET!);
+    event = stripe.webhooks.constructEvent(body, sig!, webhookSecret);
   } catch (err) {
     return NextResponse.json({ error: `signature: ${(err as Error).message}` }, { status: 400 });
   }
