@@ -23,26 +23,33 @@ export async function updateSession(request: NextRequest) {
 
   let response = NextResponse.next({ request });
 
-  const supabase = createServerClient(url, key, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
+  try {
+    const supabase = createServerClient(url, key, {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        setAll(cookiesToSet: CookieToSet[]) {
+          cookiesToSet.forEach(({ name, value }) => {
+            request.cookies.set(name, value);
+          });
+          response = NextResponse.next({ request });
+          cookiesToSet.forEach(({ name, value, options }) => {
+            response.cookies.set(name, value, options);
+          });
+        },
       },
-      setAll(cookiesToSet: CookieToSet[]) {
-        cookiesToSet.forEach(({ name, value }) => {
-          request.cookies.set(name, value);
-        });
-        response = NextResponse.next({ request });
-        cookiesToSet.forEach(({ name, value, options }) => {
-          response.cookies.set(name, value, options);
-        });
-      },
-    },
-  });
+    });
 
-  // IMPORTANT: call getUser() — not getSession() — to force a token refresh
-  // if the access token has expired. getSession() reads from cookies only.
-  await supabase.auth.getUser();
+    // IMPORTANT: call getUser() — not getSession() — to force a token refresh
+    // if the access token has expired. getSession() reads from cookies only.
+    // Wrap in try/catch: if Supabase is unreachable or a cookie is corrupt,
+    // we must NOT crash the request — public pages like /login have to render
+    // even when the auth service is degraded.
+    await supabase.auth.getUser();
+  } catch (err) {
+    console.error('[supabase/middleware] getUser failed:', err);
+  }
 
   return response;
 }
