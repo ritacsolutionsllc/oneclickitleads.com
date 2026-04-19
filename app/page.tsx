@@ -12,6 +12,7 @@ export default function Landing() {
           </Link>
           <nav className="hidden md:flex gap-8 text-sm text-neutral-700">
             <a href="#how">How it works</a>
+            <a href="#quality">Quality model</a>
             <a href="#pricing">Pricing</a>
             <a href="#compliance">Compliance</a>
             <Link href="/dashboard" className="text-emerald-700 font-medium">
@@ -24,16 +25,17 @@ export default function Landing() {
       {/* Hero */}
       <section className="mx-auto max-w-6xl px-6 py-24">
         <p className="text-sm uppercase tracking-widest text-emerald-700 mb-3">
-          Lead data, the clean way
+          Quality-first lead data
         </p>
         <h1 className="text-5xl md:text-6xl font-semibold tracking-tight leading-tight">
-          Scrubbed leads.<br />
-          <span className="text-emerald-600">Delivered in one click.</span>
+          Every lead scored,<br />
+          <span className="text-emerald-600">tiered, and explainable.</span>
         </h1>
         <p className="mt-6 text-lg text-neutral-700 max-w-2xl">
-          OneClickitLeads gathers, validates, and de-duplicates lead data, then
-          exports it straight into smartly.io, Klaviyo, Meta, or CSV. Stop
-          paying for bounces — only send to inboxes that open.
+          OneClickitLeads assigns every record a 0–100 quality score with the
+          reason codes to back it up. Only eligible leads make it past the
+          export gate — weak signals land in a review queue, hard rejects never
+          leave the building.
         </p>
         <div className="mt-8 flex flex-wrap gap-4">
           <Link
@@ -43,16 +45,16 @@ export default function Landing() {
             Start free audit
           </Link>
           <a
-            href="#pricing"
+            href="#quality"
             className="inline-flex items-center rounded-full border border-neutral-300 px-6 py-3 text-neutral-900 font-medium hover:bg-neutral-100"
           >
-            See pricing
+            See the quality model
           </a>
         </div>
-        <div className="mt-10 flex items-center gap-8 text-sm text-neutral-500">
-          <span>✅ 97% deliverability target</span>
+        <div className="mt-10 flex flex-wrap items-center gap-x-8 gap-y-2 text-sm text-neutral-500">
+          <span>✅ Deterministic scoring · no LLM randomness</span>
+          <span>✅ Export-gated on eligibility, not volume</span>
           <span>✅ CCPA + GDPR compliant</span>
-          <span>✅ Ships in &lt; 15 min</span>
         </div>
       </section>
 
@@ -62,10 +64,10 @@ export default function Landing() {
           <h2 className="text-3xl font-semibold mb-12">How it works</h2>
           <ol className="grid md:grid-cols-4 gap-8">
             {[
-              ['Source', 'Pull from Apollo, Common Room, purchased lists, or ethical scraping of public directories.'],
-              ['Scrub', 'Syntax + MX + SMTP check, dedupe, suppression filter — every lead passes 5 gates.'],
-              ['Enrich', 'Hunter.io and Apollo fill the gaps: title, company, location, social.'],
-              ['Export', 'One click to smartly.io Custom Audience, CSV, or your CRM via API.'],
+              ['Source',   'Pull from first-party forms, paid APIs (Apollo, Hunter), verified directories, or ethical scraping. Every source is tagged A/B/C/D.'],
+              ['Verify',   'Syntax → MX → SMTP ladder, plus disposable, duplicate, and suppression filters. Verification status is stored on the row.'],
+              ['Score',    '0–100 quality score across identity, completeness, source tier, ICP fit, freshness, and intent. Every point is explainable.'],
+              ['Gate',     'Exports only read leads tagged eligible. Borderline rows go to the review queue; hard rejects never reach a client.'],
             ].map(([t, d], i) => (
               <li key={t} className="relative">
                 <div className="text-5xl font-semibold text-emerald-200">{i + 1}</div>
@@ -77,11 +79,51 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* Quality model */}
+      <section id="quality" className="border-t border-neutral-200">
+        <div className="mx-auto max-w-6xl px-6 py-20">
+          <h2 className="text-3xl font-semibold mb-2">The quality model</h2>
+          <p className="text-neutral-600 mb-10 max-w-2xl">
+            Every lead is scored on six dimensions. The score is deterministic —
+            the same input always produces the same output — and the reason
+            codes travel with the record into the dashboard and the CSV.
+          </p>
+          <div className="grid md:grid-cols-3 gap-6">
+            {[
+              { w: 35, t: 'Identity',      d: 'Syntax + MX + SMTP + first-party opt-in signal. Disposable and role-only addresses are hard rejects.' },
+              { w: 20, t: 'Source tier',   d: 'A = first-party, B = paid API, C = verified directory, D = open-web scrape. Tier D without SMTP verification routes to review.' },
+              { w: 15, t: 'Completeness', d: 'Name, company, title, geo, phone. Sparse profiles land in review, not the export file.' },
+              { w: 15, t: 'ICP fit',       d: 'Matched against the client\'s Ideal Customer Profile segments and tag signals. No ICP → no export.' },
+              { w: 10, t: 'Freshness',     d: 'Age-weighted: ≤7d full credit, ≤90d partial, >180d stale. Stale leads requeue for re-verify before export.' },
+              { w: 5,  t: 'Intent',        d: 'Behavioral or explicit intent signals (form fills, event triggers) push borderline leads over the line.' },
+            ].map((r) => (
+              <div key={r.t} className="rounded-xl border border-neutral-200 bg-white p-5">
+                <div className="flex items-baseline justify-between">
+                  <div className="font-medium">{r.t}</div>
+                  <div className="text-xs text-neutral-500">weight {r.w}</div>
+                </div>
+                <p className="mt-2 text-sm text-neutral-600">{r.d}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-10 rounded-xl border border-neutral-200 bg-white p-6">
+            <div className="font-medium mb-3">Eligibility verdict</div>
+            <div className="grid md:grid-cols-4 gap-4 text-sm">
+              <Verdict color="emerald" label="Eligible"   hint="Score ≥70, verified, ICP match — ready to export." />
+              <Verdict color="amber"   label="In review"  hint="40–69 score or scraped & unverified — operator decides." />
+              <Verdict color="orange"  label="Quarantine" hint="Under 40 or no contact surface — safe to reject." />
+              <Verdict color="red"     label="Rejected"   hint="Disposable, bad syntax, suppressed, or duplicate." />
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Pricing */}
-      <section id="pricing" className="border-t border-neutral-200">
+      <section id="pricing" className="border-t border-neutral-200 bg-white">
         <div className="mx-auto max-w-6xl px-6 py-20">
           <h2 className="text-3xl font-semibold mb-2">Pricing</h2>
-          <p className="text-neutral-600 mb-10">14-day free trial. Cancel anytime. No setup fees.</p>
+          <p className="text-neutral-600 mb-10">Billed on eligible leads, not raw volume. 14-day free trial. Cancel anytime.</p>
           <PricingGrid />
           <div className="mt-8 text-center">
             <Link href="/pricing" className="text-emerald-700 font-medium hover:underline">
@@ -92,24 +134,24 @@ export default function Landing() {
       </section>
 
       {/* Compliance */}
-      <section id="compliance" className="border-t border-neutral-200 bg-white">
+      <section id="compliance" className="border-t border-neutral-200">
         <div className="mx-auto max-w-6xl px-6 py-20">
           <h2 className="text-3xl font-semibold mb-6">Compliance by default</h2>
           <div className="grid md:grid-cols-3 gap-8 text-sm text-neutral-700">
             <div>
-              <div className="font-medium text-neutral-900">CCPA & GDPR aware</div>
-              Every lead stores its source URL and ingestion timestamp. Deletion
-              requests processed in ≤45 days.
+              <div className="font-medium text-neutral-900">Provenance on every row</div>
+              Source tier, source URL, verification status, and ingestion
+              timestamp are stored with every lead. DSAR requests processed in ≤45 days.
             </div>
             <div>
               <div className="font-medium text-neutral-900">No dark patterns</div>
               Consent banner on every public form. Unsubscribes auto-flow into
-              per-client suppression lists.
+              per-client suppression lists and become hard rejects at the gate.
             </div>
             <div>
-              <div className="font-medium text-neutral-900">Verified data only</div>
-              No cold outreach from scraped-only sources without a verified
-              opt-in signal. It's a hard rule, not a preference.
+              <div className="font-medium text-neutral-900">Verified or bust</div>
+              Scraped leads without SMTP verification never export automatically
+              — they route to the review queue. It&apos;s a hard rule, not a preference.
             </div>
           </div>
         </div>
@@ -127,5 +169,28 @@ export default function Landing() {
         </div>
       </footer>
     </main>
+  );
+}
+
+function Verdict({
+  color,
+  label,
+  hint,
+}: {
+  color: 'emerald' | 'amber' | 'orange' | 'red';
+  label: string;
+  hint: string;
+}) {
+  const cls = {
+    emerald: 'border-emerald-300 bg-emerald-50 text-emerald-900',
+    amber:   'border-amber-300   bg-amber-50   text-amber-900',
+    orange:  'border-orange-300  bg-orange-50  text-orange-900',
+    red:     'border-red-300     bg-red-50     text-red-900',
+  }[color];
+  return (
+    <div className={`rounded-lg border px-4 py-3 ${cls}`}>
+      <div className="font-medium">{label}</div>
+      <p className="mt-1 text-xs opacity-80">{hint}</p>
+    </div>
   );
 }
