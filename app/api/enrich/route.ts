@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scoreLead, type SourceTier } from '@/utils/quality/score';
+import { hasMxRecord, hasValidSyntax, isDisposable } from '@/utils/scrub/email';
 
 /**
  * POST /api/enrich
@@ -25,7 +27,7 @@ export async function POST(req: NextRequest) {
 
   const { data: targets } = await supabase
     .from('leads')
-    .select('id, website')
+    .select('id, website, company, phone_e164, icp_segment, source_tier, is_duplicate, is_suppressed')
     .eq('client_id', client.id)
     .is('email', null)
     .not('website', 'is', null)
@@ -44,13 +46,46 @@ export async function POST(req: NextRequest) {
     };
     const top = data?.emails?.[0];
     if (!top?.value || (top.confidence ?? 0) < 70) continue;
+
+    const email = top.value.toLowerCase();
+    const syntax = hasValidSyntax(email);
+    const disposable = syntax ? isDisposable(email) : false;
+    const mx = syntax && !disposable ? await hasMxRecord(email) : false;
+    // Hunter 70+ confidence hits → tier b; preserve existing tier when higher.
+    const tier: SourceTier = (t.source_tier as SourceTier | null) === 'a' ? 'a' : 'b';
+    const quality = scoreLead({
+      email,
+      phone_e164: t.phone_e164,
+      first_name: top.first_name ?? null,
+      last_name: top.last_name ?? null,
+      company: t.company,
+      title: top.position ?? null,
+      icp_segment: t.icp_segment,
+      syntax_valid: syntax,
+      mx_valid: mx,
+      smtp_valid: false,
+      is_disposable: disposable,
+      is_duplicate: !!t.is_duplicate,
+      is_suppressed: !!t.is_suppressed,
+      source_tier: tier,
+      verified_at: mx ? new Date() : null,
+    });
     await supabase
       .from('leads')
       .update({
-        email: top.value,
+        email,
         first_name: top.first_name ?? null,
         last_name: top.last_name ?? null,
         title: top.position ?? null,
+        syntax_valid: syntax,
+        mx_valid: mx,
+        is_disposable: disposable,
+        quality_score: quality.quality_score,
+        verification_status: quality.verification_status,
+        source_tier: tier,
+        export_eligibility: quality.export_eligibility,
+        reason_codes: quality.reason_codes,
+        verified_at: mx ? new Date().toISOString() : null,
       })
       .eq('id', t.id);
     updated++;

@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scoreLead, type SourceTier } from '@/utils/quality/score';
+import { hasMxRecord, hasValidSyntax, isDisposable } from '@/utils/scrub/email';
 
 /**
  * POST /api/harvest-emails
@@ -43,7 +45,9 @@ export async function POST(req: NextRequest) {
   // Leads with a website (in raw->source_url) but no email yet.
   let q = supabase
     .from('leads')
-    .select('id, company, city, region, raw')
+    .select(
+      'id, company, first_name, last_name, phone_e164, title, icp_segment, city, region, source_tier, is_duplicate, is_suppressed, raw',
+    )
     .eq('client_id', client.id)
     .is('email', null)
     .not('raw->>source_url', 'is', null)
@@ -67,12 +71,39 @@ export async function POST(req: NextRequest) {
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
       if (hit.email) {
+        const syntax = hasValidSyntax(hit.email);
+        const disposable = syntax ? isDisposable(hit.email) : false;
+        const mx = syntax && !disposable ? await hasMxRecord(hit.email) : false;
+        const quality = scoreLead({
+          email: hit.email,
+          phone_e164: lead.phone_e164,
+          first_name: lead.first_name,
+          last_name: lead.last_name,
+          company: lead.company,
+          title: lead.title,
+          icp_segment: lead.icp_segment,
+          syntax_valid: syntax,
+          mx_valid: mx,
+          smtp_valid: false,
+          is_disposable: disposable,
+          is_duplicate: !!lead.is_duplicate,
+          is_suppressed: !!lead.is_suppressed,
+          source_tier: (lead.source_tier as SourceTier | null) ?? 'c',
+          verified_at: mx ? new Date() : null,
+        });
         await supabase
           .from('leads')
           .update({
             email: hit.email,
-            syntax_valid: true,
+            syntax_valid: syntax,
+            mx_valid: mx,
+            is_disposable: disposable,
             reject_reason: null,
+            quality_score: quality.quality_score,
+            verification_status: quality.verification_status,
+            export_eligibility: quality.export_eligibility,
+            reason_codes: quality.reason_codes,
+            verified_at: mx ? new Date().toISOString() : null,
             raw: { ...(lead.raw as object), harvested_from: hit.found_on },
           })
           .eq('id', lead.id);

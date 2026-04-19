@@ -1,5 +1,12 @@
 import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import {
+  scoreLead,
+  sourceTierFromKind,
+  KNOWN_ICP_SEGMENTS,
+} from '@/utils/quality/score';
+import { hasValidSyntax, normalizeEmail } from '@/utils/scrub/email';
+import { normalizePhone } from '@/utils/scrub/phone';
 
 type SearchParams = { client?: string; error?: string; ok?: string };
 
@@ -14,19 +21,28 @@ export default async function SubmitLead({
     'use server';
 
     const slug =
-      ((formData.get('client_slug') as string) || '').trim() || 'chella';
-    const email = ((formData.get('email') as string) || '')
+      ((formData.get('client_slug') as string) || '').trim().slice(0, 64) ||
+      'chella';
+    const emailRaw = ((formData.get('email') as string) || '')
       .trim()
-      .toLowerCase();
-    const first_name = ((formData.get('first_name') as string) || '').trim();
-    const last_name = ((formData.get('last_name') as string) || '').trim();
-    const phone = ((formData.get('phone') as string) || '').trim();
-    const icp_segment =
-      ((formData.get('icp_segment') as string) || '').trim() || 'b2c_beauty';
+      .slice(0, 254);
+    const email = normalizeEmail(emailRaw);
+    const first_name = ((formData.get('first_name') as string) || '')
+      .trim()
+      .slice(0, 80);
+    const last_name = ((formData.get('last_name') as string) || '')
+      .trim()
+      .slice(0, 80);
+    const phoneRaw = ((formData.get('phone') as string) || '').trim().slice(0, 32);
+    const phone_e164 = phoneRaw ? normalizePhone(phoneRaw) : null;
+    const icp_raw = ((formData.get('icp_segment') as string) || '').trim();
+    const icp_segment = KNOWN_ICP_SEGMENTS.includes(icp_raw)
+      ? icp_raw
+      : 'b2c_beauty';
 
-    if (!email || !first_name) {
+    if (!email || !first_name || !hasValidSyntax(email)) {
       redirect(
-        `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('Please enter your first name and email.')}`,
+        `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('Please enter your first name and a valid email.')}`,
       );
     }
 
@@ -52,13 +68,40 @@ export default async function SubmitLead({
         );
       }
 
+      const source_tier = sourceTierFromKind('firstparty');
+      const quality = scoreLead({
+        email,
+        phone_e164,
+        first_name,
+        last_name,
+        icp_segment,
+        syntax_valid: true,
+        // MX/SMTP are unverified at submit-time; an async reverify job
+        // can upgrade this later and rerun scoring.
+        mx_valid: false,
+        smtp_valid: false,
+        is_disposable: false,
+        is_duplicate: false,
+        is_suppressed: false,
+        source_tier,
+        verified_at: new Date(),
+      });
+
       const { error: insertErr } = await supabase.from('leads').insert({
         client_id: client!.id,
         email,
         first_name,
         last_name: last_name || null,
-        phone_e164: phone || null,
+        phone_e164,
         icp_segment,
+        syntax_valid: true,
+        is_scrubbed: false,
+        quality_score: quality.quality_score,
+        verification_status: quality.verification_status,
+        source_tier,
+        export_eligibility: quality.export_eligibility,
+        reason_codes: quality.reason_codes,
+        review_status: 'pending',
         raw: Object.fromEntries(formData.entries()),
       });
 

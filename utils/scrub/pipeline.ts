@@ -6,6 +6,14 @@
 import { scrubEmail, normalizeEmail } from './email';
 import { normalizePhone } from './phone';
 import { enrich } from './enrich';
+import {
+  scoreLead,
+  type ExportEligibility,
+  type QualityResult,
+  type ReasonCode,
+  type SourceTier,
+  type VerificationStatus,
+} from '@/utils/quality/score';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface RawLead {
@@ -36,14 +44,27 @@ export interface ScrubbedLead extends RawLead {
   scrub_score: number;
   reject_reason?: string;
   is_scrubbed: boolean;
+  // Quality engine output — every row gets these, they drive export gating.
+  quality_score: number;
+  verification_status: VerificationStatus;
+  export_eligibility: ExportEligibility;
+  reason_codes: ReasonCode[];
+  source_tier: SourceTier;
+}
+
+export interface ScrubOptions {
+  doEnrich?: boolean;
+  /** Provenance tier of the source that produced these rows. Defaults 'c'. */
+  sourceTier?: SourceTier;
 }
 
 export async function scrubBatch(
   supabase: SupabaseClient,
   clientId: string,
   rows: RawLead[],
-  opts: { doEnrich?: boolean } = { doEnrich: true }
+  opts: ScrubOptions = { doEnrich: true }
 ): Promise<ScrubbedLead[]> {
+  const sourceTier: SourceTier = opts.sourceTier ?? 'c';
   // 1. pull suppressions once
   const { data: sup } = await supabase
     .from('suppressions')
@@ -111,9 +132,30 @@ export async function scrubBatch(
       !isDuplicate &&
       !isSuppressed;
 
+    const merged = { ...row, ...enrichedFields } as RawLead & {
+      linkedin_url?: string;
+    };
+
+    const quality: QualityResult = scoreLead({
+      email: normalized || undefined,
+      phone_e164: phoneE164,
+      first_name: merged.first_name,
+      last_name: merged.last_name,
+      company: merged.company,
+      title: merged.title,
+      icp_segment: merged.icp_segment,
+      syntax_valid: !!emailResult?.syntax_valid,
+      mx_valid: !!emailResult?.mx_valid,
+      smtp_valid: !!emailResult?.smtp_valid,
+      is_disposable: !!emailResult?.is_disposable,
+      is_duplicate: isDuplicate,
+      is_suppressed: !!isSuppressed,
+      source_tier: sourceTier,
+      verified_at: isScrubbed ? new Date() : null,
+    });
+
     results.push({
-      ...row,
-      ...enrichedFields,
+      ...merged,
       normalized_email: normalized,
       phone_e164: phoneE164,
       syntax_valid: !!emailResult?.syntax_valid,
@@ -127,6 +169,11 @@ export async function scrubBatch(
         emailResult?.reject_reason ??
         (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined),
       is_scrubbed: isScrubbed,
+      quality_score: quality.quality_score,
+      verification_status: quality.verification_status,
+      export_eligibility: quality.export_eligibility,
+      reason_codes: quality.reason_codes,
+      source_tier: sourceTier,
     });
   }
 

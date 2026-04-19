@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { sourceTierFromKind } from '@/utils/quality/score';
 
 /**
  * GET /api/scrape-osm?shop=beauty&city=Los+Angeles&region=CA&country=US&client=chella&segment=salon
@@ -87,18 +88,25 @@ export async function GET(request: Request) {
     .from('clients').select('id').eq('slug', clientSlug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
+  const sourceKind = 'osm';
+  const sourceTier = sourceTierFromKind(sourceKind);
+
   const { data: src } = await supabase
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: 'scraped',
+      kind: sourceKind,
+      tier: sourceTier,
       label: `osm: ${osmKey}=${shop} in ${city}, ${region}`,
       source_url: 'https://overpass-api.de/api/interpreter',
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    sourceTier,
+  });
 
+  const now = new Date().toISOString();
   const toInsert = scrubbed.map((s) => ({
     client_id: client.id,
     source_id: src?.id,
@@ -118,8 +126,14 @@ export async function GET(request: Request) {
     smtp_valid: s.smtp_valid,
     scrub_score: s.scrub_score,
     reject_reason: s.reject_reason,
+    quality_score: s.quality_score,
+    verification_status: s.verification_status,
+    source_tier: s.source_tier,
+    export_eligibility: s.export_eligibility,
+    reason_codes: s.reason_codes,
+    verified_at: s.is_scrubbed ? now : null,
     raw: s,
-    scrubbed_at: new Date().toISOString(),
+    scrubbed_at: now,
   }));
 
   const { error } = await supabase.from('leads').insert(toInsert);
@@ -132,6 +146,9 @@ export async function GET(request: Request) {
     with_website: rows.filter((r) => r.source_url).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    eligible: toInsert.filter((r) => r.export_eligibility === 'eligible').length,
+    review: toInsert.filter((r) => r.export_eligibility === 'review').length,
+    quarantine: toInsert.filter((r) => r.export_eligibility === 'quarantine').length,
     error: error?.message,
   });
 }
