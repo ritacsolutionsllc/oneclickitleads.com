@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scoreLead } from '@/utils/scoring/score';
+import { hasMxRecord, hasValidSyntax } from '@/utils/scrub/email';
 
 /**
  * POST /api/harvest-emails
@@ -43,7 +45,9 @@ export async function POST(req: NextRequest) {
   // Leads with a website (in raw->source_url) but no email yet.
   let q = supabase
     .from('leads')
-    .select('id, company, city, region, raw')
+    .select(
+      'id, company, first_name, last_name, title, city, region, country, icp_segment, tags, phone_e164, raw, source_tier',
+    )
     .eq('client_id', client.id)
     .is('email', null)
     .not('raw->>source_url', 'is', null)
@@ -66,17 +70,53 @@ export async function POST(req: NextRequest) {
       if (!site) continue;
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
-      if (hit.email) {
-        await supabase
-          .from('leads')
-          .update({
-            email: hit.email,
-            syntax_valid: true,
-            reject_reason: null,
-            raw: { ...(lead.raw as object), harvested_from: hit.found_on },
-          })
-          .eq('id', lead.id);
-      }
+      if (!hit.email) continue;
+
+      const syntaxOk = hasValidSyntax(hit.email);
+      const mxOk = syntaxOk ? await hasMxRecord(hit.email) : false;
+      const isScrubbed = syntaxOk && mxOk;
+      const scored = scoreLead({
+        email: hit.email,
+        phone_e164: lead.phone_e164 ?? null,
+        first_name: lead.first_name ?? null,
+        last_name: lead.last_name ?? null,
+        company: lead.company ?? null,
+        title: lead.title ?? null,
+        city: lead.city ?? null,
+        region: lead.region ?? null,
+        country: lead.country ?? null,
+        icp_segment: lead.icp_segment ?? null,
+        tags: lead.tags ?? null,
+        source_kind:
+          lead.source_tier === 'public_directory' ? 'google_places' : 'scraped',
+        is_scrubbed: isScrubbed,
+        syntax_valid: syntaxOk,
+        mx_valid: mxOk,
+        smtp_valid: false,
+        ingested_at: new Date(),
+        verified_at: mxOk ? new Date() : null,
+      });
+
+      const nowIso = new Date().toISOString();
+      await supabase
+        .from('leads')
+        .update({
+          email: hit.email,
+          syntax_valid: syntaxOk,
+          mx_valid: mxOk,
+          is_scrubbed: isScrubbed,
+          scrub_score: mxOk ? 60 : 20,
+          reject_reason: mxOk ? null : 'no_mx',
+          quality_score: scored.quality_score,
+          quality_reasons: scored.quality_reasons,
+          verification_status: scored.verification_status,
+          review_state: scored.review_state,
+          verified_at: mxOk ? nowIso : null,
+          last_scored_at: nowIso,
+          scrubbed_at: nowIso,
+          raw: { ...(lead.raw as object), harvested_from: hit.found_on },
+        })
+        .eq('id', lead.id);
     }
   }
   await Promise.all(Array.from({ length: pool }, worker));

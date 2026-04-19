@@ -1,5 +1,8 @@
 import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import { scoreLead } from '@/utils/scoring/score';
+import { hasValidSyntax, normalizeEmail } from '@/utils/scrub/email';
+import { normalizePhone } from '@/utils/scrub/phone';
 
 type SearchParams = { client?: string; error?: string; ok?: string };
 
@@ -52,14 +55,51 @@ export default async function SubmitLead({
         );
       }
 
-      const { error: insertErr } = await supabase.from('leads').insert({
-        client_id: client!.id,
-        email,
+      // Opt-in forms are first-party with consent — treat as manually verified
+      // for scoring purposes so they land in `ready`, not `review`.
+      const normalizedEmail = normalizeEmail(email);
+      const syntaxOk = hasValidSyntax(normalizedEmail);
+      const phoneE164 = phone ? normalizePhone(phone) : null;
+      const now = new Date().toISOString();
+      const scored = scoreLead({
+        email: normalizedEmail,
+        phone_e164: phoneE164,
         first_name,
         last_name: last_name || null,
-        phone_e164: phone || null,
         icp_segment,
+        tags: ['opt_in', 'opted_in'],
+        is_scrubbed: syntaxOk,
+        syntax_valid: syntaxOk,
+        mx_valid: syntaxOk,
+        smtp_valid: false,
+        manual_verified: syntaxOk,
+        source_kind: 'opt_in',
+        ingested_at: now,
+        verified_at: syntaxOk ? now : null,
+      });
+
+      const { error: insertErr } = await supabase.from('leads').insert({
+        client_id: client!.id,
+        email: normalizedEmail,
+        first_name,
+        last_name: last_name || null,
+        phone_e164: phoneE164,
+        icp_segment,
+        tags: ['opt_in', 'opted_in'],
+        is_scrubbed: syntaxOk,
+        syntax_valid: syntaxOk,
+        mx_valid: syntaxOk,
+        smtp_valid: false,
+        scrub_score: syntaxOk ? 60 : 0,
+        quality_score: scored.quality_score,
+        quality_reasons: scored.quality_reasons,
+        verification_status: scored.verification_status,
+        source_tier: scored.source_tier,
+        review_state: scored.review_state,
+        verified_at: syntaxOk ? now : null,
+        last_scored_at: now,
         raw: Object.fromEntries(formData.entries()),
+        scrubbed_at: now,
       });
 
       if (insertErr) {

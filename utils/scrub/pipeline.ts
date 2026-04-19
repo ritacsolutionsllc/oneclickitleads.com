@@ -7,6 +7,8 @@ import { scrubEmail, normalizeEmail } from './email';
 import { normalizePhone } from './phone';
 import { enrich } from './enrich';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { scoreLead } from '@/utils/scoring/score';
+import type { ReviewState, SourceTier, VerificationStatus } from '@/utils/scoring/types';
 
 export interface RawLead {
   email?: string;
@@ -21,6 +23,11 @@ export interface RawLead {
   icp_segment?: string;
   source_url?: string;
   tags?: string[];
+  linkedin_url?: string;
+  instagram_handle?: string;
+  website?: string;
+  rating?: number;
+  rating_count?: number;
   [k: string]: unknown;
 }
 
@@ -36,14 +43,21 @@ export interface ScrubbedLead extends RawLead {
   scrub_score: number;
   reject_reason?: string;
   is_scrubbed: boolean;
+  quality_score: number;
+  quality_reasons: string[];
+  verification_status: VerificationStatus;
+  source_tier: SourceTier;
+  review_state: ReviewState;
+  export_eligible: boolean;
 }
 
 export async function scrubBatch(
   supabase: SupabaseClient,
   clientId: string,
   rows: RawLead[],
-  opts: { doEnrich?: boolean } = { doEnrich: true }
+  opts: { doEnrich?: boolean; sourceKind?: string } = { doEnrich: true }
 ): Promise<ScrubbedLead[]> {
+  const sourceKind = opts.sourceKind;
   // 1. pull suppressions once
   const { data: sup } = await supabase
     .from('suppressions')
@@ -111,9 +125,44 @@ export async function scrubBatch(
       !isDuplicate &&
       !isSuppressed;
 
+    const merged = { ...row, ...enrichedFields };
+    const rejectReason =
+      emailResult?.reject_reason ??
+      (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined);
+
+    const scored = scoreLead({
+      email: normalized || null,
+      phone_e164: phoneE164,
+      first_name: (merged.first_name as string) ?? null,
+      last_name: (merged.last_name as string) ?? null,
+      company: (merged.company as string) ?? null,
+      title: (merged.title as string) ?? null,
+      linkedin_url: (merged.linkedin_url as string) ?? null,
+      instagram_handle: (merged.instagram_handle as string) ?? null,
+      website: (merged.website as string) ?? (merged.source_url as string) ?? null,
+      city: (merged.city as string) ?? null,
+      region: (merged.region as string) ?? null,
+      country: (merged.country as string) ?? null,
+      icp_segment: (merged.icp_segment as string) ?? null,
+      tags: (merged.tags as string[] | undefined) ?? null,
+      rating: (merged.rating as number | undefined) ?? null,
+      rating_count: (merged.rating_count as number | undefined) ?? null,
+      is_scrubbed: isScrubbed,
+      is_duplicate: isDuplicate,
+      is_suppressed: !!isSuppressed,
+      is_disposable: !!emailResult?.is_disposable,
+      syntax_valid: !!emailResult?.syntax_valid,
+      mx_valid: !!emailResult?.mx_valid,
+      smtp_valid: !!emailResult?.smtp_valid,
+      reject_reason: rejectReason,
+      source_kind: sourceKind,
+      source_url: (merged.source_url as string) ?? null,
+      ingested_at: new Date(),
+      verified_at: emailResult?.mx_valid ? new Date() : null,
+    });
+
     results.push({
-      ...row,
-      ...enrichedFields,
+      ...merged,
       normalized_email: normalized,
       phone_e164: phoneE164,
       syntax_valid: !!emailResult?.syntax_valid,
@@ -123,10 +172,14 @@ export async function scrubBatch(
       is_duplicate: isDuplicate,
       is_suppressed: !!isSuppressed,
       scrub_score: emailResult?.score ?? 0,
-      reject_reason:
-        emailResult?.reject_reason ??
-        (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined),
+      reject_reason: rejectReason,
       is_scrubbed: isScrubbed,
+      quality_score: scored.quality_score,
+      quality_reasons: scored.quality_reasons,
+      verification_status: scored.verification_status,
+      source_tier: scored.source_tier,
+      review_state: scored.review_state,
+      export_eligible: scored.export_eligible,
     });
   }
 

@@ -128,7 +128,11 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    sourceKind: 'webscraping.ai',
+  });
+
+  const scrubbedAt = new Date().toISOString();
   const toInsert = scrubbed.map((s) => ({
     client_id: client.id,
     source_id: src?.id,
@@ -148,8 +152,14 @@ export async function POST(req: NextRequest) {
     smtp_valid: s.smtp_valid,
     scrub_score: s.scrub_score,
     reject_reason: s.reject_reason,
+    quality_score: s.quality_score,
+    quality_reasons: s.quality_reasons,
+    verification_status: s.verification_status,
+    source_tier: s.source_tier,
+    review_state: s.review_state,
+    last_scored_at: scrubbedAt,
     raw: s,
-    scrubbed_at: new Date().toISOString(),
+    scrubbed_at: scrubbedAt,
   }));
   const { error } = await supabase.from('leads').insert(toInsert);
 

@@ -39,8 +39,10 @@ export async function POST(req: NextRequest) {
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const sourceKind = source?.kind ?? 'api';
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, { sourceKind });
 
+  const scrubbedAt = new Date().toISOString();
   const inserts = scrubbed.map((s) => ({
     client_id: client.id,
     source_id: srcRow?.id,
@@ -65,8 +67,15 @@ export async function POST(req: NextRequest) {
     is_suppressed: s.is_suppressed,
     scrub_score: s.scrub_score,
     reject_reason: s.reject_reason,
+    quality_score: s.quality_score,
+    quality_reasons: s.quality_reasons,
+    verification_status: s.verification_status,
+    source_tier: s.source_tier,
+    review_state: s.review_state,
+    verified_at: s.mx_valid ? scrubbedAt : null,
+    last_scored_at: scrubbedAt,
     raw: s,
-    scrubbed_at: new Date().toISOString(),
+    scrubbed_at: scrubbedAt,
   }));
 
   // upsert on (client_id, email_hash) — hash is computed by the DB trigger
@@ -76,5 +85,8 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ingested: inserts.length,
     clean: inserts.filter((r) => r.is_scrubbed).length,
+    export_eligible: inserts.filter((r) => r.review_state === 'ready' && r.quality_score >= 60).length,
+    in_review: inserts.filter((r) => r.review_state === 'review').length,
+    quarantined: inserts.filter((r) => r.review_state === 'quarantined').length,
   });
 }

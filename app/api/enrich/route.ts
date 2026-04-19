@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scoreLead } from '@/utils/scoring/score';
+import { hasMxRecord, hasValidSyntax } from '@/utils/scrub/email';
 
 /**
  * POST /api/enrich
@@ -25,7 +27,9 @@ export async function POST(req: NextRequest) {
 
   const { data: targets } = await supabase
     .from('leads')
-    .select('id, website')
+    .select(
+      'id, website, phone_e164, company, city, region, country, icp_segment, tags',
+    )
     .eq('client_id', client.id)
     .is('email', null)
     .not('website', 'is', null)
@@ -44,13 +48,53 @@ export async function POST(req: NextRequest) {
     };
     const top = data?.emails?.[0];
     if (!top?.value || (top.confidence ?? 0) < 70) continue;
+
+    const email = top.value;
+    const syntaxOk = hasValidSyntax(email);
+    const mxOk = syntaxOk ? await hasMxRecord(email) : false;
+    const isScrubbed = syntaxOk && mxOk;
+    const scored = scoreLead({
+      email,
+      phone_e164: t.phone_e164 ?? null,
+      first_name: top.first_name ?? null,
+      last_name: top.last_name ?? null,
+      title: top.position ?? null,
+      company: t.company ?? null,
+      website: t.website,
+      city: t.city ?? null,
+      region: t.region ?? null,
+      country: t.country ?? null,
+      icp_segment: t.icp_segment ?? null,
+      tags: t.tags ?? null,
+      is_scrubbed: isScrubbed,
+      syntax_valid: syntaxOk,
+      mx_valid: mxOk,
+      smtp_valid: false,
+      source_kind: 'hunter',
+      ingested_at: new Date(),
+      verified_at: mxOk ? new Date() : null,
+    });
+
+    const nowIso = new Date().toISOString();
     await supabase
       .from('leads')
       .update({
-        email: top.value,
+        email,
         first_name: top.first_name ?? null,
         last_name: top.last_name ?? null,
         title: top.position ?? null,
+        syntax_valid: syntaxOk,
+        mx_valid: mxOk,
+        is_scrubbed: isScrubbed,
+        scrub_score: mxOk ? 60 : 20,
+        reject_reason: mxOk ? null : 'no_mx',
+        quality_score: scored.quality_score,
+        quality_reasons: scored.quality_reasons,
+        verification_status: scored.verification_status,
+        source_tier: scored.source_tier,
+        review_state: scored.review_state,
+        verified_at: mxOk ? nowIso : null,
+        last_scored_at: nowIso,
       })
       .eq('id', t.id);
     updated++;

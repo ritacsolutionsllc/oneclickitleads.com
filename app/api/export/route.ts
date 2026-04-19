@@ -7,9 +7,14 @@ import { planByTier } from '@/lib/plans';
 /**
  * GET /api/export?client=chella&format=csv|smartly&segment=salon&min_score=60
  *
- * - Only export rows where is_scrubbed = true (defense in depth; RLS also enforces tenant).
- * - Plan cap enforced via v_client_usage.
- * - Writes an `exports` row for audit.
+ * Quality-first export gate. Only rows with `export_eligible = true` leave
+ * the building:
+ *   - is_scrubbed + not duplicate/suppressed  (enforced by the generated column)
+ *   - quality_score >= 60                     (enforced by the generated column)
+ *   - review_state ∈ {ready, approved}        (enforced by the generated column)
+ * RLS keeps this tenant-safe; the `export_eligible` filter keeps it
+ * policy-safe. Plan cap enforced via v_client_usage. Writes an `exports` row
+ * for audit.
  */
 export async function GET(req: NextRequest) {
   const supabase = await createClient();
@@ -49,13 +54,16 @@ export async function GET(req: NextRequest) {
 
   let q = supabase
     .from('leads')
-    .select('email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, scrub_score')
+    .select(
+      'email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, scrub_score, quality_score, verification_status, source_tier',
+    )
     .eq('client_id', client.id)
-    .eq('is_scrubbed', true)
+    .eq('export_eligible', true)
+    .order('quality_score', { ascending: false, nullsFirst: false })
     .order('lead_quality_score', { ascending: false, nullsFirst: false })
     .limit(rowLimit);
   if (segment) q = q.eq('icp_segment', segment);
-  if (minScore) q = q.gte('scrub_score', minScore);
+  if (minScore) q = q.gte('quality_score', minScore);
 
   const { data: leads, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
