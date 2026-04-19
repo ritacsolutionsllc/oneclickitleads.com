@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
-import { scrubBatch } from '@/utils/scrub/pipeline';
+import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
 
 /**
  * GET /api/scrape-osm?shop=beauty&city=Los+Angeles&region=CA&country=US&client=chella&segment=salon
@@ -118,6 +118,7 @@ export async function GET(request: Request) {
     smtp_valid: s.smtp_valid,
     scrub_score: s.scrub_score,
     reject_reason: s.reject_reason,
+    ...scoringInsertFields(s),
     raw: s,
     scrubbed_at: new Date().toISOString(),
   }));

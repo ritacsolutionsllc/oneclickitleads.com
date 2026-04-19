@@ -3,14 +3,27 @@ import { createClient } from '@/utils/supabase/server';
 import Papa from 'papaparse';
 import { enforceExport, maxRowsForExport } from '@/utils/plans/enforce';
 import { planByTier } from '@/lib/plans';
+import { allowedTiers, type ExportPolicy, type ExportTier } from '@/utils/scoring/tier';
 
 /**
- * GET /api/export?client=chella&format=csv|smartly&segment=salon&min_score=60
+ * GET /api/export?client=chella&format=csv|smartly&segment=salon&tier=standard&min_score=60
  *
  * - Only export rows where is_scrubbed = true (defense in depth; RLS also enforces tenant).
+ * - Only export rows whose export_tier is `allow`ed by the client's export_policy.
+ *   Tiers marked `manual` or `block` never ship through this endpoint; `manual`
+ *   tiers (e.g. review) go through the review queue UI.
  * - Plan cap enforced via v_client_usage.
  * - Writes an `exports` row for audit.
  */
+const VALID_TIERS: ExportTier[] = [
+  'premium',
+  'standard',
+  'prospecting',
+  'review',
+  'hold',
+  'discard',
+];
+
 export async function GET(req: NextRequest) {
   const supabase = await createClient();
   const { searchParams } = new URL(req.url);
@@ -18,14 +31,21 @@ export async function GET(req: NextRequest) {
   const format = searchParams.get('format') ?? 'csv';
   const segment = searchParams.get('segment');
   const minScore = Number(searchParams.get('min_score') ?? 0);
+  const tierFilter = searchParams.get('tier');
   if (!clientSlug) return NextResponse.json({ error: 'client required' }, { status: 400 });
+  if (tierFilter && !VALID_TIERS.includes(tierFilter as ExportTier)) {
+    return NextResponse.json(
+      { error: `tier must be one of ${VALID_TIERS.join(', ')}` },
+      { status: 400 }
+    );
+  }
 
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
   const { data: client } = await supabase
     .from('clients')
-    .select('id, name, plan')
+    .select('id, name, plan, export_policy')
     .eq('slug', clientSlug)
     .eq('owner_user', user.id)
     .single();
@@ -47,15 +67,38 @@ export async function GET(req: NextRequest) {
   const plan = planByTier(client.plan);
   const rowLimit = maxRowsForExport(plan, cap.remaining ?? 10_000);
 
+  const policy = (client.export_policy ?? null) as ExportPolicy | null;
+  const autoAllowed = allowedTiers(policy);
+  // If the caller asked for a specific tier, only honor it if policy allows it.
+  const tiersToExport: ExportTier[] =
+    tierFilter && autoAllowed.includes(tierFilter as ExportTier)
+      ? [tierFilter as ExportTier]
+      : autoAllowed;
+
+  if (tiersToExport.length === 0) {
+    return NextResponse.json(
+      { error: 'No tiers are enabled for export on this account.' },
+      { status: 400 }
+    );
+  }
+
+  const floor = Math.max(
+    minScore,
+    Number(policy?.min_composite_score ?? 0)
+  );
+
   let q = supabase
     .from('leads')
-    .select('email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, scrub_score')
+    .select(
+      'email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, composite_score, export_tier, scrub_score'
+    )
     .eq('client_id', client.id)
     .eq('is_scrubbed', true)
-    .order('lead_quality_score', { ascending: false, nullsFirst: false })
+    .in('export_tier', tiersToExport)
+    .order('composite_score', { ascending: false, nullsFirst: false })
     .limit(rowLimit);
   if (segment) q = q.eq('icp_segment', segment);
-  if (minScore) q = q.gte('scrub_score', minScore);
+  if (floor > 0) q = q.gte('composite_score', floor);
 
   const { data: leads, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -66,7 +109,12 @@ export async function GET(req: NextRequest) {
     client_id: client.id,
     destination: format === 'smartly' ? 'smartly' : 'csv',
     row_count: rows.length,
-    filters: { segment, min_score: minScore || undefined },
+    filters: {
+      segment,
+      min_score: minScore || undefined,
+      min_composite_score: floor || undefined,
+      tiers: tiersToExport,
+    },
     created_by: user.id,
   });
 

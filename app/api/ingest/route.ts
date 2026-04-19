@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
-import { scrubBatch } from '@/utils/scrub/pipeline';
+import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
 
 /**
  * POST /api/ingest
@@ -65,6 +65,7 @@ export async function POST(req: NextRequest) {
     is_suppressed: s.is_suppressed,
     scrub_score: s.scrub_score,
     reject_reason: s.reject_reason,
+    ...scoringInsertFields(s),
     raw: s,
     scrubbed_at: new Date().toISOString(),
   }));
