@@ -44,6 +44,8 @@ export async function POST(req: NextRequest) {
     };
     const top = data?.emails?.[0];
     if (!top?.value || (top.confidence ?? 0) < 70) continue;
+    // Enriched emails need verification before they can export — drop
+    // into review with the enriched metadata preserved.
     await supabase
       .from('leads')
       .update({
@@ -51,6 +53,10 @@ export async function POST(req: NextRequest) {
         first_name: top.first_name ?? null,
         last_name: top.last_name ?? null,
         title: top.position ?? null,
+        review_state: 'review',
+        export_eligible: false,
+        source_tier: 'tier_2_enriched',
+        source_confidence: top.confidence ?? null,
       })
       .eq('id', t.id);
     updated++;

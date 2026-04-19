@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { scrubbedToLeadRow } from '@/utils/scrub/toInsert';
 
 /**
  * GET /api/scrape-osm?shop=beauty&city=Los+Angeles&region=CA&country=US&client=chella&segment=salon
@@ -91,36 +92,22 @@ export async function GET(request: Request) {
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: 'scraped',
+      kind: 'osm',
       label: `osm: ${osmKey}=${shop} in ${city}, ${region}`,
       source_url: 'https://overpass-api.de/api/interpreter',
+      tier: 'tier_3_public',
+      confidence: 55,
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    doEnrich: true,
+    sourceTier: 'tier_3_public',
+  });
 
-  const toInsert = scrubbed.map((s) => ({
-    client_id: client.id,
-    source_id: src?.id,
-    company: s.company,
-    phone_e164: s.phone_e164,
-    email: s.normalized_email || null,
-    title: s.title,
-    icp_segment: s.icp_segment,
-    city: s.city,
-    region: s.region,
-    country: s.country,
-    tags: s.tags ?? [],
-    is_scrubbed: s.is_scrubbed,
-    is_duplicate: s.is_duplicate,
-    syntax_valid: s.syntax_valid,
-    mx_valid: s.mx_valid,
-    smtp_valid: s.smtp_valid,
-    scrub_score: s.scrub_score,
-    reject_reason: s.reject_reason,
-    raw: s,
-    scrubbed_at: new Date().toISOString(),
-  }));
+  const toInsert = scrubbed.map((s) =>
+    scrubbedToLeadRow(s, { clientId: client.id, sourceId: src?.id })
+  );
 
   const { error } = await supabase.from('leads').insert(toInsert);
 
@@ -132,6 +119,9 @@ export async function GET(request: Request) {
     with_website: rows.filter((r) => r.source_url).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    export_eligible: toInsert.filter((r) => r.export_eligible).length,
+    in_review: toInsert.filter((r) => r.review_state === 'review').length,
+    quarantined: toInsert.filter((r) => r.review_state === 'quarantined').length,
     error: error?.message,
   });
 }

@@ -47,15 +47,18 @@ export async function GET(req: NextRequest) {
   const plan = planByTier(client.plan);
   const rowLimit = maxRowsForExport(plan, cap.remaining ?? 10_000);
 
+  // Export gating: only `export_eligible = true` rows leave the system.
+  // `is_scrubbed` alone is not enough — scraped records may be scrubbed
+  // but still awaiting review. The scoring engine is the single authority.
   let q = supabase
     .from('leads')
-    .select('email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, scrub_score')
+    .select('email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, quality_score, source_tier, quality_reasons')
     .eq('client_id', client.id)
-    .eq('is_scrubbed', true)
-    .order('lead_quality_score', { ascending: false, nullsFirst: false })
+    .eq('export_eligible', true)
+    .order('quality_score', { ascending: false, nullsFirst: false })
     .limit(rowLimit);
   if (segment) q = q.eq('icp_segment', segment);
-  if (minScore) q = q.gte('scrub_score', minScore);
+  if (minScore) q = q.gte('quality_score', minScore);
 
   const { data: leads, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

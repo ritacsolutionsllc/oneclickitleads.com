@@ -33,22 +33,22 @@ export default async function LeadsPage({ searchParams }: SP) {
   let q = supabase
     .from('leads')
     .select(
-      'id, first_name, last_name, email, phone_e164, company, title, city, region, icp_segment, scrub_score, is_scrubbed, reject_reason, created_at',
+      'id, first_name, last_name, email, phone_e164, company, title, city, region, icp_segment, quality_score, review_state, export_eligible, source_tier, is_scrubbed, reject_reason, created_at',
       { count: 'exact' }
     )
     .eq('client_id', active.id);
 
   if (sp.segment) q = q.eq('icp_segment', sp.segment);
-  if (sp.scrubbed === '1') q = q.eq('is_scrubbed', true);
-  if (sp.scrubbed === '0') q = q.eq('is_scrubbed', false);
-  if (sp.minScore) q = q.gte('scrub_score', Number(sp.minScore));
+  if (sp.scrubbed === '1') q = q.eq('export_eligible', true);
+  if (sp.scrubbed === '0') q = q.eq('export_eligible', false);
+  if (sp.minScore) q = q.gte('quality_score', Number(sp.minScore));
   if (sp.q) {
     const term = sp.q;
     q = q.or(`email.ilike.%${term}%,company.ilike.%${term}%,first_name.ilike.%${term}%,last_name.ilike.%${term}%`);
   }
 
   const { data: leads, count } = await q
-    .order('lead_quality_score', { ascending: false, nullsFirst: false })
+    .order('quality_score', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false })
     .range(from, to);
 
@@ -151,17 +151,19 @@ export default async function LeadsPage({ searchParams }: SP) {
                     ) : '—'}
                   </td>
                   <td className="px-4 py-3 font-medium">
-                    {l.scrub_score ?? '—'}
+                    {l.quality_score ?? '—'}
                   </td>
                   <td className="px-4 py-3">
-                    {l.is_scrubbed ? (
-                      <span className="rounded-full bg-emerald-100 text-emerald-800 px-2 py-0.5 text-xs">clean</span>
-                    ) : l.reject_reason ? (
-                      <span title={l.reject_reason} className="rounded-full bg-red-50 text-red-800 px-2 py-0.5 text-xs">
-                        {l.reject_reason}
+                    {l.export_eligible ? (
+                      <span className="rounded-full bg-emerald-100 text-emerald-800 px-2 py-0.5 text-xs">export-ready</span>
+                    ) : l.review_state === 'quarantined' ? (
+                      <span title={l.reject_reason ?? 'quarantined'} className="rounded-full bg-red-50 text-red-800 px-2 py-0.5 text-xs">
+                        {l.reject_reason ?? 'quarantined'}
                       </span>
+                    ) : l.review_state === 'review' ? (
+                      <span className="rounded-full bg-amber-50 text-amber-800 px-2 py-0.5 text-xs">review</span>
                     ) : (
-                      <span className="rounded-full bg-neutral-100 text-neutral-700 px-2 py-0.5 text-xs">pending</span>
+                      <span className="rounded-full bg-neutral-100 text-neutral-700 px-2 py-0.5 text-xs">{l.review_state ?? 'pending'}</span>
                     )}
                   </td>
                 </tr>

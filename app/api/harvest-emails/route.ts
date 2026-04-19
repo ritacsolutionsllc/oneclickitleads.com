@@ -67,12 +67,16 @@ export async function POST(req: NextRequest) {
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
       if (hit.email) {
+        // Harvested emails always land in review until SMTP verification
+        // promotes them — the quality gate never trusts regex alone.
         await supabase
           .from('leads')
           .update({
             email: hit.email,
             syntax_valid: true,
             reject_reason: null,
+            review_state: 'review',
+            export_eligible: false,
             raw: { ...(lead.raw as object), harvested_from: hit.found_on },
           })
           .eq('id', lead.id);

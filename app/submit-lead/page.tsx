@@ -1,5 +1,8 @@
 import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import { scoreLead } from '@/utils/quality/score';
+import { hasValidSyntax, isDisposable, hasMxRecord, normalizeEmail } from '@/utils/scrub/email';
+import { normalizePhone } from '@/utils/scrub/phone';
 
 type SearchParams = { client?: string; error?: string; ok?: string };
 
@@ -52,13 +55,49 @@ export default async function SubmitLead({
         );
       }
 
+      const normalizedEmail = normalizeEmail(email);
+      const syntaxOk = hasValidSyntax(normalizedEmail);
+      const disposable = syntaxOk ? isDisposable(normalizedEmail) : false;
+      const mxOk = syntaxOk && !disposable ? await hasMxRecord(normalizedEmail) : false;
+      const phoneE164 = phone ? normalizePhone(phone) : null;
+
+      const quality = scoreLead({
+        syntax_valid: syntaxOk,
+        mx_valid: mxOk,
+        smtp_valid: false, // SMTP verification runs in a follow-up job
+        is_disposable: disposable,
+        is_duplicate: false,
+        is_suppressed: false,
+        email: normalizedEmail,
+        phone_e164: phoneE164,
+        first_name,
+        last_name,
+        icp_segment,
+        source_tier: 'tier_1_verified',
+        source_confidence: 95,
+        ingested_at: new Date(),
+      });
+
       const { error: insertErr } = await supabase.from('leads').insert({
         client_id: client!.id,
-        email,
+        email: normalizedEmail,
         first_name,
         last_name: last_name || null,
-        phone_e164: phone || null,
+        phone_e164: phoneE164,
         icp_segment,
+        syntax_valid: syntaxOk,
+        mx_valid: mxOk,
+        is_disposable: disposable,
+        scrub_score: syntaxOk && mxOk ? 60 : 0,
+        is_scrubbed: syntaxOk && mxOk && !disposable,
+        scrubbed_at: new Date().toISOString(),
+        quality_score: quality.score,
+        quality_reasons: quality.reasons,
+        review_state: quality.review_state,
+        export_eligible: quality.export_eligible,
+        source_tier: quality.source_tier,
+        source_confidence: 95,
+        verified_at: quality.verified_at,
         raw: Object.fromEntries(formData.entries()),
       });
 

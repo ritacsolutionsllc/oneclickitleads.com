@@ -6,6 +6,11 @@
 import { scrubEmail, normalizeEmail } from './email';
 import { normalizePhone } from './phone';
 import { enrich } from './enrich';
+import {
+  scoreLead,
+  type ReviewState,
+  type SourceTier,
+} from '@/utils/quality/score';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface RawLead {
@@ -21,6 +26,8 @@ export interface RawLead {
   icp_segment?: string;
   source_url?: string;
   tags?: string[];
+  rating?: number | null;
+  rating_count?: number | null;
   [k: string]: unknown;
 }
 
@@ -36,14 +43,33 @@ export interface ScrubbedLead extends RawLead {
   scrub_score: number;
   reject_reason?: string;
   is_scrubbed: boolean;
+
+  // Quality-first fields populated by the canonical scoring engine.
+  quality_score: number;
+  quality_reasons: string[];
+  source_tier: SourceTier;
+  source_confidence: number;
+  review_state: ReviewState;
+  export_eligible: boolean;
+  verified_at: string | null;
+}
+
+export interface ScrubOptions {
+  doEnrich?: boolean;
+  /** Source tier for every row in this batch (e.g. 'tier_3_public' for places). */
+  sourceTier?: SourceTier;
+  /** Provider-reported confidence 0-100 (Hunter confidence, Apollo match, etc). */
+  sourceConfidence?: number;
 }
 
 export async function scrubBatch(
   supabase: SupabaseClient,
   clientId: string,
   rows: RawLead[],
-  opts: { doEnrich?: boolean } = { doEnrich: true }
+  opts: ScrubOptions = { doEnrich: true }
 ): Promise<ScrubbedLead[]> {
+  const sourceTier: SourceTier = opts.sourceTier ?? 'tier_4_scraped';
+  const sourceConfidence = opts.sourceConfidence ?? defaultConfidenceForTier(sourceTier);
   // 1. pull suppressions once
   const { data: sup } = await supabase
     .from('suppressions')
@@ -111,9 +137,38 @@ export async function scrubBatch(
       !isDuplicate &&
       !isSuppressed;
 
-    results.push({
+    const merged: RawLead & Record<string, unknown> = {
       ...row,
       ...enrichedFields,
+    };
+
+    const quality = scoreLead({
+      syntax_valid: !!emailResult?.syntax_valid,
+      mx_valid: !!emailResult?.mx_valid,
+      smtp_valid: !!emailResult?.smtp_valid,
+      is_disposable: !!emailResult?.is_disposable,
+      is_duplicate: isDuplicate,
+      is_suppressed: !!isSuppressed,
+      email: normalized || null,
+      phone_e164: phoneE164,
+      first_name: (merged.first_name as string | undefined) ?? null,
+      last_name: (merged.last_name as string | undefined) ?? null,
+      company: (merged.company as string | undefined) ?? null,
+      title: (merged.title as string | undefined) ?? null,
+      city: (merged.city as string | undefined) ?? null,
+      region: (merged.region as string | undefined) ?? null,
+      country: (merged.country as string | undefined) ?? null,
+      icp_segment: (merged.icp_segment as string | undefined) ?? null,
+      tags: (merged.tags as string[] | undefined) ?? null,
+      source_tier: sourceTier,
+      source_confidence: sourceConfidence,
+      rating: (merged.rating as number | undefined) ?? null,
+      rating_count: (merged.rating_count as number | undefined) ?? null,
+      ingested_at: new Date(),
+    });
+
+    results.push({
+      ...merged,
       normalized_email: normalized,
       phone_e164: phoneE164,
       syntax_valid: !!emailResult?.syntax_valid,
@@ -127,10 +182,26 @@ export async function scrubBatch(
         emailResult?.reject_reason ??
         (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined),
       is_scrubbed: isScrubbed,
+      quality_score: quality.score,
+      quality_reasons: quality.reasons,
+      source_tier: quality.source_tier,
+      source_confidence: sourceConfidence,
+      review_state: quality.review_state,
+      export_eligible: quality.export_eligible,
+      verified_at: quality.verified_at,
     });
   }
 
   return results;
+}
+
+function defaultConfidenceForTier(tier: SourceTier): number {
+  switch (tier) {
+    case 'tier_1_verified': return 95;
+    case 'tier_2_enriched': return 75;
+    case 'tier_3_public':   return 55;
+    case 'tier_4_scraped':  return 30;
+  }
 }
 
 async function sha256(input: string): Promise<string> {

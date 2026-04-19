@@ -54,13 +54,14 @@ export async function POST(req: NextRequest) {
     .from('clients').select('id').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
-  // Build the query
+  // Build the query — only export-eligible leads can leave the system.
+  // The scoring engine owns this flag; /api/push/smartly never second-guesses it.
   let q = supabase
     .from('leads')
-    .select('email, phone_e164, first_name, last_name, city, region, country, scrub_score')
+    .select('email, phone_e164, first_name, last_name, city, region, country, quality_score, source_tier')
     .eq('client_id', client.id)
-    .eq('is_scrubbed', true)
-    .gte('scrub_score', min_score);
+    .eq('export_eligible', true)
+    .gte('quality_score', min_score);
   if (segment) q = q.eq('icp_segment', segment);
 
   const { data: leads, error: qErr } = await q;

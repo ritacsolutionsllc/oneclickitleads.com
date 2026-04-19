@@ -47,6 +47,8 @@ export async function POST(req: NextRequest) {
       kind: 'firstparty',
       label: `shopify import ${file.name} (${mode})`,
       source_url: 'shopify:customers.csv',
+      tier: 'tier_1_verified',
+      confidence: 100,
     })
     .select('id').single();
 
@@ -82,6 +84,13 @@ export async function POST(req: NextRequest) {
     mx_valid: true,
     smtp_valid: true,
     scrub_score: 100,
+    quality_score: 100,
+    quality_reasons: ['firstparty_shopify', 'source_tier_1_verified'],
+    review_state: 'approved',
+    export_eligible: true,
+    source_tier: 'tier_1_verified',
+    source_confidence: 100,
+    verified_at: new Date().toISOString(),
     raw: r,
     scrubbed_at: new Date().toISOString(),
   }));
