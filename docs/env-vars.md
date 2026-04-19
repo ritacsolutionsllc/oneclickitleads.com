@@ -43,7 +43,18 @@ Sign up: <https://resend.com/signup>
 | Var | Example |
 |---|---|
 | `NEXT_PUBLIC_APP_URL` | `https://oneclickitleads.com` |
+| `SITE_URL` | `https://oneclickitleads.com` — **must** match Supabase → Auth → URL Configuration → Site URL. Used as the fallback for magic-link email redirects. |
 | `INGEST_SECRET` | Generate with `openssl rand -hex 32` — shared between cron + import jobs |
+
+**Supabase Auth URL Configuration** (required for magic-link login to work across environments): in the Supabase dashboard under **Authentication → URL Configuration**, set:
+
+- Site URL: `https://oneclickitleads.com`
+- Redirect URLs (add each on its own line):
+  - `https://oneclickitleads.com/auth/callback`
+  - `https://*.vercel.app/auth/callback` — covers Vercel preview deployments
+  - `http://localhost:3000/auth/callback` — local dev
+
+Without these, magic-link emails will always redirect to the default Site URL regardless of where the user clicked "Sign in" from.
 
 ---
 
