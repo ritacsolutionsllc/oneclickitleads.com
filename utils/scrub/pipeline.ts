@@ -1,11 +1,14 @@
-// The full scrubbing pipeline. Composes email check + phone + enrichment + dedupe + suppression.
+// The full scrubbing + scoring pipeline. Composes email check + phone +
+// enrichment + dedupe + suppression, then hands every row to the quality
+// scoring engine so downstream routes get a single verdict per lead.
 //
 // Usage (from an API route or edge function):
-//   const clean = await scrubBatch(supabase, clientId, rawRows);
+//   const clean = await scrubBatch(supabase, clientId, rawRows, { source_kind: 'apollo' });
 
 import { scrubEmail, normalizeEmail } from './email';
 import { normalizePhone } from './phone';
-import { enrich } from './enrich';
+import { enrich, type EnrichedLead } from './enrich';
+import { scoreLead, type ScoringResult } from '../scoring/score';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface RawLead {
@@ -21,10 +24,12 @@ export interface RawLead {
   icp_segment?: string;
   source_url?: string;
   tags?: string[];
+  rating?: number;
+  rating_count?: number;
   [k: string]: unknown;
 }
 
-export interface ScrubbedLead extends RawLead {
+export interface ScrubbedLead extends RawLead, ScoringResult {
   normalized_email: string;
   phone_e164: string | null;
   syntax_valid: boolean;
@@ -33,17 +38,25 @@ export interface ScrubbedLead extends RawLead {
   is_disposable: boolean;
   is_duplicate: boolean;
   is_suppressed: boolean;
-  scrub_score: number;
+  scrub_score: number;            // legacy: email-only 0-100 score
   reject_reason?: string;
   is_scrubbed: boolean;
+  verified_at: string | null;
+}
+
+export interface ScrubOptions {
+  doEnrich?: boolean;
+  /** e.g. 'apollo' | 'commonroom' | 'places' | 'osm' | 'scraped' | 'firstparty' */
+  source_kind?: string;
 }
 
 export async function scrubBatch(
   supabase: SupabaseClient,
   clientId: string,
   rows: RawLead[],
-  opts: { doEnrich?: boolean } = { doEnrich: true }
+  opts: ScrubOptions = {}
 ): Promise<ScrubbedLead[]> {
+  const { doEnrich = true, source_kind } = opts;
   // 1. pull suppressions once
   const { data: sup } = await supabase
     .from('suppressions')
@@ -93,9 +106,9 @@ export async function scrubBatch(
     if (hash) seenEmails.add(hash);
     if (phoneE164) seenPhones.add(phoneE164);
 
-    let enrichedFields = {};
+    let enrichedFields: EnrichedLead = {};
     if (
-      opts.doEnrich &&
+      doEnrich &&
       emailResult?.syntax_valid &&
       emailResult?.mx_valid &&
       !isSuppressed &&
@@ -104,29 +117,65 @@ export async function scrubBatch(
       enrichedFields = await enrich(normalized);
     }
 
+    const syntaxValid = !!emailResult?.syntax_valid;
+    const mxValid = !!emailResult?.mx_valid;
+    const smtpValid = !!emailResult?.smtp_valid;
+    const isDisposable = !!emailResult?.is_disposable;
+
+    // Old per-email "scrub_score" kept for backwards compatibility + the
+    // legacy v_client_usage count. The new unified score lives in
+    // quality_score and is produced below.
+    const legacyScrubScore = emailResult?.score ?? (phoneE164 ? 40 : 0);
+    const rejectReason =
+      emailResult?.reject_reason ??
+      (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined);
+
     const isScrubbed =
-      !!emailResult?.syntax_valid &&
-      !!emailResult?.mx_valid &&
-      !emailResult?.is_disposable &&
-      !isDuplicate &&
-      !isSuppressed;
+      (syntaxValid && mxValid && !isDisposable && !isDuplicate && !isSuppressed) ||
+      // Phone-only leads from high-trust directory sources (Places/OSM) are
+      // still considered "scrubbed" — the scoring engine decides export.
+      (!emailRaw && !!phoneE164 && !isDuplicate && !isSuppressed);
+
+    const merged: RawLead = { ...row, ...enrichedFields };
+    const scored = scoreLead({
+      syntax_valid: syntaxValid,
+      mx_valid: mxValid,
+      smtp_valid: smtpValid,
+      is_disposable: isDisposable,
+      is_duplicate: isDuplicate,
+      is_suppressed: isSuppressed,
+      reject_reason: rejectReason,
+      email: normalized || null,
+      phone_e164: phoneE164,
+      first_name: merged.first_name,
+      last_name: merged.last_name,
+      company: merged.company,
+      title: merged.title,
+      city: merged.city,
+      region: merged.region,
+      country: merged.country,
+      icp_segment: merged.icp_segment,
+      tags: merged.tags,
+      rating: merged.rating,
+      rating_count: merged.rating_count,
+      source_kind,
+    });
 
     results.push({
-      ...row,
-      ...enrichedFields,
+      ...merged,
       normalized_email: normalized,
       phone_e164: phoneE164,
-      syntax_valid: !!emailResult?.syntax_valid,
-      mx_valid: !!emailResult?.mx_valid,
-      smtp_valid: !!emailResult?.smtp_valid,
-      is_disposable: !!emailResult?.is_disposable,
+      syntax_valid: syntaxValid,
+      mx_valid: mxValid,
+      smtp_valid: smtpValid,
+      is_disposable: isDisposable,
       is_duplicate: isDuplicate,
       is_suppressed: !!isSuppressed,
-      scrub_score: emailResult?.score ?? 0,
-      reject_reason:
-        emailResult?.reject_reason ??
-        (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined),
+      scrub_score: legacyScrubScore,
+      reject_reason: rejectReason,
       is_scrubbed: isScrubbed,
+      verified_at: smtpValid ? new Date().toISOString() : null,
+      ...scored,
     });
   }
 

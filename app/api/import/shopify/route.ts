@@ -3,6 +3,7 @@ import { createAdminClient } from '@/utils/supabase/server';
 import Papa from 'papaparse';
 import { normalizeEmail } from '@/utils/scrub/email';
 import { normalizePhone } from '@/utils/scrub/phone';
+import { scoreLead, sourceTierFor } from '@/utils/scoring/score';
 
 /**
  * POST /api/import/shopify
@@ -45,6 +46,7 @@ export async function POST(req: NextRequest) {
     .insert({
       client_id: client.id,
       kind: 'firstparty',
+      tier: sourceTierFor('firstparty'),
       label: `shopify import ${file.name} (${mode})`,
       source_url: 'shopify:customers.csv',
     })
@@ -59,32 +61,46 @@ export async function POST(req: NextRequest) {
     reason: 'existing_customer',
   }));
 
-  const seedRows = rows.map((r) => ({
-    client_id: client.id,
-    source_id: src?.id,
-    first_name: r['First Name'] || null,
-    last_name: r['Last Name'] || null,
-    email: normalizeEmail(r['Email']),
-    phone_e164: r['Phone'] ? normalizePhone(r['Phone']) : null,
-    city: r['City'] || null,
-    region: r['Province'] || null,
-    country: r['Country'] || null,
-    icp_segment: 'b2c_beauty',
-    tags: [
+  const seedRows = rows.map((r) => {
+    const tags = [
       'shopify',
       'existing_customer',
       ...(Number(r['Total Orders'] ?? 0) >= 2 ? ['repeat_buyer'] : []),
       ...((r['Accepts Email Marketing'] ?? '').toLowerCase() === 'yes' ? ['opted_in'] : []),
-    ],
-    // Treat as scrubbed: it's first-party, already-validated purchase data.
-    is_scrubbed: true,
-    syntax_valid: true,
-    mx_valid: true,
-    smtp_valid: true,
-    scrub_score: 100,
-    raw: r,
-    scrubbed_at: new Date().toISOString(),
-  }));
+    ];
+    const base = {
+      first_name: r['First Name'] || null,
+      last_name: r['Last Name'] || null,
+      email: normalizeEmail(r['Email']),
+      phone_e164: r['Phone'] ? normalizePhone(r['Phone']) : null,
+      city: r['City'] || null,
+      region: r['Province'] || null,
+      country: r['Country'] || null,
+      icp_segment: 'b2c_beauty',
+      tags,
+      // Already-validated purchase data — treat the scrub flags as passing.
+      syntax_valid: true,
+      mx_valid: true,
+      smtp_valid: true,
+      is_disposable: false,
+      is_duplicate: false,
+      is_suppressed: false,
+    };
+    const scored = scoreLead({ ...base, source_kind: 'firstparty' });
+    return {
+      client_id: client.id,
+      source_id: src?.id,
+      ...base,
+      // legacy scrub columns
+      is_scrubbed: true,
+      scrub_score: 100,
+      // quality-first columns
+      ...scored,
+      verified_at: new Date().toISOString(),
+      raw: r,
+      scrubbed_at: new Date().toISOString(),
+    };
+  });
 
   let suppressed = 0;
   let seeded = 0;

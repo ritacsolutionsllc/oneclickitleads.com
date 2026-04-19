@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { toLeadRow } from '@/utils/scrub/persist';
+import { sourceTierFor } from '@/utils/scoring/score';
 
 /**
  * POST /api/scrape-webscrapingai
@@ -85,6 +87,7 @@ export async function POST(req: NextRequest) {
     .insert({
       client_id: client.id,
       kind: 'scraped',
+      tier: sourceTierFor('scraped'),
       label: `webscraping.ai: ${urls.length} url${urls.length > 1 ? 's' : ''}${segment ? ` (${segment})` : ''}`,
       source_url: 'https://api.webscraping.ai/html',
     })
@@ -128,29 +131,12 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
-  const toInsert = scrubbed.map((s) => ({
-    client_id: client.id,
-    source_id: src?.id,
-    company: s.company,
-    phone_e164: s.phone_e164,
-    email: s.normalized_email || null,
-    title: s.title,
-    icp_segment: s.icp_segment,
-    city: s.city,
-    region: s.region,
-    country: s.country,
-    tags: s.tags ?? [],
-    is_scrubbed: s.is_scrubbed,
-    is_duplicate: s.is_duplicate,
-    syntax_valid: s.syntax_valid,
-    mx_valid: s.mx_valid,
-    smtp_valid: s.smtp_valid,
-    scrub_score: s.scrub_score,
-    reject_reason: s.reject_reason,
-    raw: s,
-    scrubbed_at: new Date().toISOString(),
-  }));
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    source_kind: 'scraped',
+  });
+  const toInsert = scrubbed.map((s) =>
+    toLeadRow(s, { client_id: client.id, source_id: src?.id })
+  );
   const { error } = await supabase.from('leads').insert(toInsert);
 
   return NextResponse.json({
@@ -160,6 +146,8 @@ export async function POST(req: NextRequest) {
     with_phone: rows.filter((r) => r.phone).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    export_eligible: toInsert.filter((r) => r.export_eligible).length,
+    quarantined: toInsert.filter((r) => r.review_state === 'quarantined').length,
     errors,
     error: error?.message,
   });
