@@ -43,7 +43,18 @@ Sign up: <https://resend.com/signup>
 | Var | Example |
 |---|---|
 | `NEXT_PUBLIC_APP_URL` | `https://oneclickitleads.com` |
+| `SITE_URL` | `https://oneclickitleads.com` — **must** match Supabase → Auth → URL Configuration → Site URL. Used as the fallback for magic-link email redirects. |
 | `INGEST_SECRET` | Generate with `openssl rand -hex 32` — shared between cron + import jobs |
+
+**Supabase Auth URL Configuration** (required for magic-link login to work across environments): in the Supabase dashboard under **Authentication → URL Configuration**, set:
+
+- Site URL: `https://oneclickitleads.com`
+- Redirect URLs (add each on its own line):
+  - `https://oneclickitleads.com/auth/callback`
+  - `https://*.vercel.app/auth/callback` — covers Vercel preview deployments
+  - `http://localhost:3000/auth/callback` — local dev
+
+Without these, magic-link emails will always redirect to the default Site URL regardless of where the user clicked "Sign in" from.
 
 ---
 
@@ -92,9 +103,10 @@ Sign-up pages: [NeverBounce](https://app.neverbounce.com/sign-up) · [ZeroBounce
 | `COMMONROOM_API_KEY` | [app.commonroom.io](https://app.commonroom.io/) → Settings → API |
 | `SCRAPINGBEE_API_KEY` | [app.scrapingbee.com/account](https://app.scrapingbee.com/account) |
 | `BRIGHTDATA_API_KEY` | [brightdata.com/cp/api_tokens](https://brightdata.com/cp/api_tokens) |
+| `WEBSCRAPINGAI_API_KEY` | [webscraping.ai/profile](https://webscraping.ai/profile) — used by `/api/scrape-webscrapingai` for JS-rendered fetch + rotating proxies on directories that block naive fetch |
 | `GOOGLE_PLACES_KEY` | [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials) — create key, enable the **Places API (New)** product (not just legacy Places) |
 
-Sign-up pages: [Apollo](https://app.apollo.io/#/login) · [Common Room](https://www.commonroom.io/sign-up/) · [ScrapingBee](https://app.scrapingbee.com/account/register) · [Bright Data](https://brightdata.com/) · [Google Cloud](https://console.cloud.google.com/)
+Sign-up pages: [Apollo](https://app.apollo.io/#/login) · [Common Room](https://www.commonroom.io/sign-up/) · [ScrapingBee](https://app.scrapingbee.com/account/register) · [Bright Data](https://brightdata.com/) · [webscraping.ai](https://webscraping.ai/register) · [Google Cloud](https://console.cloud.google.com/)
 
 `/api/scrape-osm` uses OpenStreetMap Overpass — no key required.
 
