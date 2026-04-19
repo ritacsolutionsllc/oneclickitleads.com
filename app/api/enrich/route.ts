@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scrubEmail } from '@/utils/scrub/email';
+import { scoreLead, toLeadColumns } from '@/utils/scoring/quality';
 
 /**
  * POST /api/enrich
@@ -25,7 +27,9 @@ export async function POST(req: NextRequest) {
 
   const { data: targets } = await supabase
     .from('leads')
-    .select('id, website')
+    .select(
+      'id, website, phone_e164, company, title, city, region, country, icp_segment, tags'
+    )
     .eq('client_id', client.id)
     .is('email', null)
     .not('website', 'is', null)
@@ -44,13 +48,45 @@ export async function POST(req: NextRequest) {
     };
     const top = data?.emails?.[0];
     if (!top?.value || (top.confidence ?? 0) < 70) continue;
+
+    const scrubbed = await scrubEmail(top.value);
+    const now = new Date();
+    // Hunter is a paid enrichment API -> tier B, which combined with an
+    // MX-valid address is enough to clear the identity gate.
+    const verdict = scoreLead({
+      email: scrubbed.normalized,
+      phone_e164: t.phone_e164 ?? null,
+      first_name: top.first_name ?? null,
+      last_name: top.last_name ?? null,
+      company: t.company ?? null,
+      title: top.position ?? t.title ?? null,
+      city: t.city ?? null,
+      region: t.region ?? null,
+      country: t.country ?? null,
+      icp_segment: t.icp_segment ?? null,
+      tags: t.tags ?? [],
+      syntax_valid: scrubbed.syntax_valid,
+      mx_valid: scrubbed.mx_valid,
+      smtp_valid: scrubbed.smtp_valid,
+      is_disposable: scrubbed.is_disposable,
+      reject_reason: scrubbed.reject_reason ?? null,
+      source_kind: 'hunter',
+      last_verified_at: now,
+    });
     await supabase
       .from('leads')
       .update({
-        email: top.value,
+        email: scrubbed.normalized,
         first_name: top.first_name ?? null,
         last_name: top.last_name ?? null,
         title: top.position ?? null,
+        syntax_valid: scrubbed.syntax_valid,
+        mx_valid: scrubbed.mx_valid,
+        smtp_valid: scrubbed.smtp_valid,
+        is_disposable: scrubbed.is_disposable,
+        scrub_score: scrubbed.score,
+        reject_reason: scrubbed.reject_reason ?? null,
+        ...toLeadColumns(verdict, now),
       })
       .eq('id', t.id);
     updated++;

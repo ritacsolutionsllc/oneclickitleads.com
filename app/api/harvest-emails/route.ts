@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scrubEmail } from '@/utils/scrub/email';
+import { scoreLead, toLeadColumns } from '@/utils/scoring/quality';
 
 /**
  * POST /api/harvest-emails
@@ -40,10 +42,15 @@ export async function POST(req: NextRequest) {
     .from('clients').select('id').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
-  // Leads with a website (in raw->source_url) but no email yet.
+  // Leads with a website (in raw->source_url) but no email yet. Harvesting
+  // writes back through the scoring engine so the re-verified lead either
+  // lands in 'review' (MX-valid but unverified) or stays in 'quarantine'
+  // — it never silently promotes a scraped row straight to 'eligible'.
   let q = supabase
     .from('leads')
-    .select('id, company, city, region, raw')
+    .select(
+      'id, company, city, region, region, country, title, phone_e164, first_name, last_name, icp_segment, tags, source_tier, raw'
+    )
     .eq('client_id', client.id)
     .is('email', null)
     .not('raw->>source_url', 'is', null)
@@ -67,13 +74,41 @@ export async function POST(req: NextRequest) {
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
       if (hit.email) {
+        const scrubbed = await scrubEmail(hit.email);
+        const now = new Date();
+        const verdict = scoreLead({
+          email: scrubbed.normalized,
+          phone_e164: lead.phone_e164 ?? null,
+          first_name: lead.first_name ?? null,
+          last_name: lead.last_name ?? null,
+          company: lead.company ?? null,
+          title: lead.title ?? null,
+          city: lead.city ?? null,
+          region: lead.region ?? null,
+          country: lead.country ?? null,
+          icp_segment: lead.icp_segment ?? null,
+          tags: lead.tags ?? [],
+          syntax_valid: scrubbed.syntax_valid,
+          mx_valid: scrubbed.mx_valid,
+          smtp_valid: scrubbed.smtp_valid,
+          is_disposable: scrubbed.is_disposable,
+          reject_reason: scrubbed.reject_reason ?? null,
+          // Harvested from the open web -> tier D regardless of prior tier.
+          source_kind: 'harvest',
+          last_verified_at: now,
+        });
         await supabase
           .from('leads')
           .update({
-            email: hit.email,
-            syntax_valid: true,
-            reject_reason: null,
+            email: scrubbed.normalized,
+            syntax_valid: scrubbed.syntax_valid,
+            mx_valid: scrubbed.mx_valid,
+            smtp_valid: scrubbed.smtp_valid,
+            is_disposable: scrubbed.is_disposable,
+            scrub_score: scrubbed.score,
+            reject_reason: scrubbed.reject_reason ?? null,
             raw: { ...(lead.raw as object), harvested_from: hit.found_on },
+            ...toLeadColumns(verdict, now),
           })
           .eq('id', lead.id);
       }

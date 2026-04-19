@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { buildLeadRow } from '@/utils/leads/insert';
 
 /**
  * POST /api/scrape-webscrapingai
@@ -129,28 +130,15 @@ export async function POST(req: NextRequest) {
   }
 
   const scrubbed = await scrubBatch(supabase as never, client.id, rows);
-  const toInsert = scrubbed.map((s) => ({
-    client_id: client.id,
-    source_id: src?.id,
-    company: s.company,
-    phone_e164: s.phone_e164,
-    email: s.normalized_email || null,
-    title: s.title,
-    icp_segment: s.icp_segment,
-    city: s.city,
-    region: s.region,
-    country: s.country,
-    tags: s.tags ?? [],
-    is_scrubbed: s.is_scrubbed,
-    is_duplicate: s.is_duplicate,
-    syntax_valid: s.syntax_valid,
-    mx_valid: s.mx_valid,
-    smtp_valid: s.smtp_valid,
-    scrub_score: s.scrub_score,
-    reject_reason: s.reject_reason,
-    raw: s,
-    scrubbed_at: new Date().toISOString(),
-  }));
+  // Open-web scrape -> tier D. These rows will land in 'review' by default
+  // unless SMTP verification lights up.
+  const toInsert = scrubbed.map((s) =>
+    buildLeadRow(s, {
+      client_id: client.id,
+      source_id: src?.id,
+      source_kind: 'webscraping',
+    })
+  );
   const { error } = await supabase.from('leads').insert(toInsert);
 
   return NextResponse.json({
@@ -159,7 +147,10 @@ export async function POST(req: NextRequest) {
     with_email: rows.filter((r) => r.email).length,
     with_phone: rows.filter((r) => r.phone).length,
     ingested: toInsert.length,
-    clean: toInsert.filter((r) => r.is_scrubbed).length,
+    eligible: toInsert.filter((r) => r.export_eligibility === 'eligible').length,
+    review: toInsert.filter((r) => r.export_eligibility === 'review').length,
+    quarantine: toInsert.filter((r) => r.export_eligibility === 'quarantine').length,
+    rejected: toInsert.filter((r) => r.export_eligibility === 'rejected').length,
     errors,
     error: error?.message,
   });
