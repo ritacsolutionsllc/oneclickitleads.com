@@ -32,17 +32,17 @@ export default function Landing() {
           <span className="text-emerald-600">tiered, and explainable.</span>
         </h1>
         <p className="mt-6 text-lg text-neutral-700 max-w-2xl">
-          OneClickitLeads assigns every record a 0–100 quality score with the
+          Upload a messy CSV, get back a verified email list. Every record is
+          scrubbed (syntax, MX, SMTP), scored 0–100, and stamped with the
           reason codes to back it up. Only eligible leads make it past the
-          export gate — weak signals land in a review queue, hard rejects never
-          leave the building.
+          export gate — ready to paste into Smartleads.ai, Smartly.io, or your CRM.
         </p>
         <div className="mt-8 flex flex-wrap gap-4">
           <Link
-            href="/submit-lead"
+            href="/dashboard/verify"
             className="inline-flex items-center rounded-full bg-emerald-600 px-6 py-3 text-white font-medium hover:bg-emerald-700"
           >
-            Start free audit
+            Scrub my CSV
           </Link>
           <a
             href="#quality"
@@ -52,9 +52,60 @@ export default function Landing() {
           </a>
         </div>
         <div className="mt-10 flex flex-wrap items-center gap-x-8 gap-y-2 text-sm text-neutral-500">
+          <span>✅ CSV in, verified emails out</span>
           <span>✅ Deterministic scoring · no LLM randomness</span>
-          <span>✅ Export-gated on eligibility, not volume</span>
           <span>✅ CCPA + GDPR compliant</span>
+        </div>
+      </section>
+
+      {/* CSV scrub callout */}
+      <section className="border-t border-neutral-200 bg-emerald-50">
+        <div className="mx-auto max-w-6xl px-6 py-16 grid md:grid-cols-[1.2fr_1fr] gap-10 items-center">
+          <div>
+            <p className="text-xs uppercase tracking-widest text-emerald-700 mb-2">New</p>
+            <h2 className="text-2xl md:text-3xl font-semibold">
+              Upload a CSV, get back a verified email list
+            </h2>
+            <p className="mt-3 text-neutral-700">
+              Drop any list — Apollo export, trade-show scan, purchased file,
+              scraped directory. We auto-detect the email column, run every
+              row through syntax → MX → SMTP verification (NeverBounce /
+              ZeroBounce), filter disposable domains, dedupe against your
+              tenant, and return a cleaned CSV with the quality score and
+              reason codes attached. Every valid row is also ingested into
+              your dashboard so you can push straight to Smartleads.ai or
+              Smartly.io.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-3">
+              <Link
+                href="/dashboard/verify"
+                className="inline-flex items-center rounded-full bg-emerald-600 px-5 py-2.5 text-white font-medium hover:bg-emerald-700 text-sm"
+              >
+                Try the CSV verifier →
+              </Link>
+              <a
+                href="#how"
+                className="inline-flex items-center rounded-full border border-emerald-300 px-5 py-2.5 text-emerald-900 font-medium hover:bg-emerald-100 text-sm"
+              >
+                How the pipeline works
+              </a>
+            </div>
+          </div>
+          <div className="rounded-xl border border-emerald-200 bg-white p-5 text-sm font-mono shadow-sm">
+            <div className="text-xs uppercase tracking-wider text-neutral-500 mb-2">your_list.csv</div>
+            <pre className="text-xs overflow-x-auto text-neutral-700">{`email,first_name,company
+jane@realsalon.com,Jane,Real Salon
+bob@mailinator.com,Bob,Test
+typo@gmial.com,Typo,Oops
+jane@realsalon.com,Jane,Real Salon`}</pre>
+            <div className="mt-3 text-xs text-emerald-700">→ scrub + score</div>
+            <div className="mt-3 text-xs uppercase tracking-wider text-neutral-500">verified.csv</div>
+            <pre className="text-xs overflow-x-auto text-neutral-700">{`email,quality_score,eligibility,reason_codes
+jane@realsalon.com,88,eligible,ID_SMTP_VERIFIED;ICP_MATCH
+bob@mailinator.com,0,rejected,REJECT_DISPOSABLE
+typo@gmial.com,0,rejected,REJECT_BAD_SYNTAX
+(duplicate removed)`}</pre>
+          </div>
         </div>
       </section>
 

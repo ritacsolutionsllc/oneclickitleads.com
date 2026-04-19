@@ -7,6 +7,7 @@ const LINKS = [
   { href: '/dashboard',              label: 'Overview',    icon: '◎' },
   { href: '/dashboard/leads',        label: 'Leads',       icon: '◈' },
   { href: '/dashboard/quality',      label: 'Quality',     icon: '◆' },
+  { href: '/dashboard/verify',       label: 'Verify CSV',  icon: '⇪' },
   { href: '/dashboard/suppressions', label: 'Suppressions', icon: '◇' },
   { href: '/dashboard/exports',      label: 'Exports',     icon: '↗' },
   { href: '/dashboard/billing',      label: 'Billing',     icon: '$' },
