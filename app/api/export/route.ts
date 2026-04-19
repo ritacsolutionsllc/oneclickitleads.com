@@ -53,7 +53,7 @@ export async function GET(req: NextRequest) {
   let q = supabase
     .from('leads')
     .select(
-      'email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, quality_score, verification_status, source_tier'
+      'email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, quality_score, verification_status, source_tier, reason_codes, last_verified_at'
     )
     .eq('client_id', client.id)
     .eq('export_eligibility', 'eligible')
@@ -65,7 +65,12 @@ export async function GET(req: NextRequest) {
   const { data: leads, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const rows = leads ?? [];
+  // Flatten reason_codes so Papa.unparse emits a readable cell instead of
+  // "[object Object]". Clients get the full explainer trail per row.
+  const rows = (leads ?? []).map((l) => ({
+    ...l,
+    reason_codes: Array.isArray(l.reason_codes) ? l.reason_codes.join(';') : '',
+  }));
 
   await supabase.from('exports').insert({
     client_id: client.id,
