@@ -6,8 +6,19 @@ type SP = { searchParams: Promise<{ client?: string; upgraded?: string; tier?: s
 
 export default async function Overview({ searchParams }: SP) {
   const sp = await searchParams;
-  const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  // Layout already bounced unauth users to /login. Guard the bootstrap here
+  // too so a transient Supabase failure on this page can't 500 — return null
+  // instead and let the shell render.
+  let user: { id: string; email?: string | null } | null = null;
+  let supabase: Awaited<ReturnType<typeof createClient>>;
+  try {
+    supabase = await createClient();
+    const { data } = await supabase.auth.getUser();
+    user = data.user;
+  } catch (err) {
+    console.error('[dashboard] bootstrap threw:', err);
+    return null;
+  }
   if (!user) return null; // layout redirects
 
   const { data: clients } = await supabase

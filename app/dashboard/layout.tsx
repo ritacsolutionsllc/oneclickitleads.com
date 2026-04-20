@@ -11,29 +11,40 @@ import SignOutButton from '@/components/SignOutButton';
  *   Sidebar: Overview, Leads, Suppressions, Exports, Billing, Settings
  */
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const supabase = await createClient();
-
-  // If Supabase is unreachable we'd rather bounce the user to /login than
-  // show a generic 500 page on every dashboard route.
+  // The entire auth bootstrap is wrapped so that ANY failure — missing env
+  // vars, corrupt cookies, Supabase degraded — bounces the visitor to /login
+  // instead of rendering a 500 page. This is the entry point reached by the
+  // "Client login" link on the marketing site, so it must never crash.
+  type ClientRow = { id: string; name: string; slug: string; plan: string };
   let user: { id: string; email?: string | null } | null = null;
+  let clients: ClientRow[] = [];
   try {
+    const supabase = await createClient();
     const { data, error } = await supabase.auth.getUser();
     if (error) {
       console.error('[dashboard/layout] getUser error:', error);
     } else {
       user = data.user;
     }
+    if (user) {
+      const { data: rows, error: qErr } = await supabase
+        .from('clients')
+        .select('id, name, slug, plan')
+        .eq('owner_user', user.id)
+        .order('created_at');
+      if (qErr) console.error('[dashboard/layout] clients query error:', qErr);
+      clients = (rows ?? []).map((r) => ({
+        id: String(r.id),
+        name: String(r.name),
+        slug: String(r.slug),
+        plan: String(r.plan ?? ''),
+      }));
+    }
   } catch (err) {
-    console.error('[dashboard/layout] getUser threw:', err);
+    console.error('[dashboard/layout] bootstrap threw:', err);
   }
 
   if (!user) redirect('/login');
-
-  const { data: clients } = await supabase
-    .from('clients')
-    .select('id, name, slug, plan')
-    .eq('owner_user', user.id)
-    .order('created_at');
 
   return (
     <div className="min-h-screen bg-neutral-50">

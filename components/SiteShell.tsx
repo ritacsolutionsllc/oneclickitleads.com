@@ -12,7 +12,7 @@ export default function SiteShell({ children }: { children: React.ReactNode }) {
             <Link href="/#how">How it works</Link>
             <Link href="/pricing">Pricing</Link>
             <Link href="/contact">Contact</Link>
-            <Link href="/dashboard" className="text-emerald-700 font-medium">
+            <Link href="/login" className="text-emerald-700 font-medium">
               Client login
             </Link>
           </nav>

@@ -14,7 +14,7 @@ export default function Landing() {
             <a href="#how">How it works</a>
             <a href="#pricing">Pricing</a>
             <a href="#compliance">Compliance</a>
-            <Link href="/dashboard" className="text-emerald-700 font-medium">
+            <Link href="/login" className="text-emerald-700 font-medium">
               Client login
             </Link>
           </nav>
