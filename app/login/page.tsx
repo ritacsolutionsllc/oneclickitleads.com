@@ -22,8 +22,11 @@ function LoginForm() {
     const callbackPath = next
       ? `/auth/callback?next=${encodeURIComponent(next)}`
       : '/auth/callback';
-    const redirectTo =
-      typeof window !== 'undefined' ? `${window.location.origin}${callbackPath}` : undefined;
+    const origin =
+      typeof window !== 'undefined'
+        ? window.location.origin
+        : process.env.NEXT_PUBLIC_APP_URL ?? '';
+    const redirectTo = origin ? `${origin}${callbackPath}` : undefined;
 
     const { error } = await supabase.auth.signInWithOtp({
       email,

@@ -12,7 +12,21 @@ import SignOutButton from '@/components/SignOutButton';
  */
 export default async function DashboardLayout({ children }: { children: React.ReactNode }) {
   const supabase = await createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+
+  // If Supabase is unreachable we'd rather bounce the user to /login than
+  // show a generic 500 page on every dashboard route.
+  let user: { id: string; email?: string | null } | null = null;
+  try {
+    const { data, error } = await supabase.auth.getUser();
+    if (error) {
+      console.error('[dashboard/layout] getUser error:', error);
+    } else {
+      user = data.user;
+    }
+  } catch (err) {
+    console.error('[dashboard/layout] getUser threw:', err);
+  }
+
   if (!user) redirect('/login');
 
   const { data: clients } = await supabase

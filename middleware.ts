@@ -13,9 +13,11 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    // Match everything except Next internals and static assets. The auth
-    // cookie must be refreshed before any SSR render of `/dashboard/**` or
-    // API route hits `supabase.auth.getUser()`.
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
+    // Match everything except Next internals, static assets, and the Stripe
+    // webhook. The webhook validates a raw-body HMAC signature; if the auth
+    // middleware refreshes session cookies on that response, future hardening
+    // could end up reading the body and break signature verification. Easier
+    // to never let auth touch it.
+    '/((?!_next/static|_next/image|favicon.ico|api/stripe/webhook|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',
   ],
 };

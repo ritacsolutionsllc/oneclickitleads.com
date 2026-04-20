@@ -33,7 +33,7 @@ export default async function LeadsPage({ searchParams }: SP) {
   let q = supabase
     .from('leads')
     .select(
-      'id, first_name, last_name, email, phone_e164, company, title, city, region, icp_segment, scrub_score, is_scrubbed, reject_reason, created_at',
+      'id, first_name, last_name, email, phone_e164, company, title, city, region, icp_segment, scrub_score, composite_score, export_tier, is_scrubbed, reject_reason, created_at',
       { count: 'exact' }
     )
     .eq('client_id', active.id);
@@ -41,14 +41,14 @@ export default async function LeadsPage({ searchParams }: SP) {
   if (sp.segment) q = q.eq('icp_segment', sp.segment);
   if (sp.scrubbed === '1') q = q.eq('is_scrubbed', true);
   if (sp.scrubbed === '0') q = q.eq('is_scrubbed', false);
-  if (sp.minScore) q = q.gte('scrub_score', Number(sp.minScore));
+  if (sp.minScore) q = q.gte('composite_score', Number(sp.minScore));
   if (sp.q) {
     const term = sp.q;
     q = q.or(`email.ilike.%${term}%,company.ilike.%${term}%,first_name.ilike.%${term}%,last_name.ilike.%${term}%`);
   }
 
   const { data: leads, count } = await q
-    .order('lead_quality_score', { ascending: false, nullsFirst: false })
+    .order('composite_score', { ascending: false, nullsFirst: false })
     .order('created_at', { ascending: false })
     .range(from, to);
 
@@ -133,6 +133,7 @@ export default async function LeadsPage({ searchParams }: SP) {
                 <th className="text-left px-4 py-3">City</th>
                 <th className="text-left px-4 py-3">Segment</th>
                 <th className="text-left px-4 py-3">Score</th>
+                <th className="text-left px-4 py-3">Tier</th>
                 <th className="text-left px-4 py-3">Status</th>
               </tr>
             </thead>
@@ -151,7 +152,14 @@ export default async function LeadsPage({ searchParams }: SP) {
                     ) : '—'}
                   </td>
                   <td className="px-4 py-3 font-medium">
-                    {l.scrub_score ?? '—'}
+                    {l.composite_score != null ? Math.round(Number(l.composite_score)) : (l.scrub_score ?? '—')}
+                  </td>
+                  <td className="px-4 py-3">
+                    {l.export_tier ? (
+                      <span className={tierBadgeClass(l.export_tier)}>{l.export_tier}</span>
+                    ) : (
+                      '—'
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     {l.is_scrubbed ? (
@@ -168,7 +176,7 @@ export default async function LeadsPage({ searchParams }: SP) {
               ))}
               {(!leads || leads.length === 0) && (
                 <tr>
-                  <td colSpan={7} className="px-4 py-10 text-center text-neutral-500">
+                  <td colSpan={8} className="px-4 py-10 text-center text-neutral-500">
                     No leads match these filters.
                   </td>
                 </tr>
@@ -195,4 +203,24 @@ export default async function LeadsPage({ searchParams }: SP) {
       </div>
     </div>
   );
+}
+
+function tierBadgeClass(tier: string): string {
+  const base = 'rounded-full px-2 py-0.5 text-xs font-medium';
+  switch (tier) {
+    case 'premium':
+      return `${base} bg-emerald-100 text-emerald-900`;
+    case 'standard':
+      return `${base} bg-sky-100 text-sky-900`;
+    case 'prospecting':
+      return `${base} bg-indigo-50 text-indigo-800`;
+    case 'review':
+      return `${base} bg-amber-100 text-amber-900`;
+    case 'hold':
+      return `${base} bg-neutral-200 text-neutral-700`;
+    case 'discard':
+      return `${base} bg-red-50 text-red-800`;
+    default:
+      return `${base} bg-neutral-100 text-neutral-700`;
+  }
 }
