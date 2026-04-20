@@ -6,6 +6,8 @@
 import { scrubEmail, normalizeEmail } from './email';
 import { normalizePhone } from './phone';
 import { enrich } from './enrich';
+import { scoreLead, type ScoreOutput } from '../scoring/score';
+import { assignTier, type ExportPolicy, type ExportTier } from '../scoring/tier';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface RawLead {
@@ -24,7 +26,7 @@ export interface RawLead {
   [k: string]: unknown;
 }
 
-export interface ScrubbedLead extends RawLead {
+export interface ScrubbedLead extends RawLead, ScoreOutput {
   normalized_email: string;
   phone_e164: string | null;
   syntax_valid: boolean;
@@ -36,14 +38,29 @@ export interface ScrubbedLead extends RawLead {
   scrub_score: number;
   reject_reason?: string;
   is_scrubbed: boolean;
+  export_tier: ExportTier;
+  verified_at: string;
+  verified_by: string;
+}
+
+export interface ScrubOptions {
+  doEnrich?: boolean;
+  /** Source trust tier [1..5] for every row in this batch. Defaults to 4 (public-scraped). */
+  sourceTrustTier?: number;
+  /** Client's target ICP segments, used by the ICP fit sub-score. */
+  clientIcpTargets?: string[];
+  /** Per-client export_policy, used to apply min_composite_score. */
+  exportPolicy?: ExportPolicy | null;
 }
 
 export async function scrubBatch(
   supabase: SupabaseClient,
   clientId: string,
   rows: RawLead[],
-  opts: { doEnrich?: boolean } = { doEnrich: true }
+  opts: ScrubOptions = { doEnrich: true }
 ): Promise<ScrubbedLead[]> {
+  const sourceTrustTier = opts.sourceTrustTier ?? 4;
+
   // 1. pull suppressions once
   const { data: sup } = await supabase
     .from('suppressions')
@@ -111,9 +128,42 @@ export async function scrubBatch(
       !isDuplicate &&
       !isSuppressed;
 
+    // Merge the raw row with enrichment so scoring sees the full picture.
+    const merged = { ...row, ...enrichedFields } as RawLead;
+    const scores = scoreLead({
+      syntax_valid: !!emailResult?.syntax_valid,
+      mx_valid: !!emailResult?.mx_valid,
+      smtp_valid: !!emailResult?.smtp_valid,
+      is_disposable: !!emailResult?.is_disposable,
+      is_duplicate: isDuplicate,
+      is_suppressed: !!isSuppressed,
+      email: normalized,
+      phone_e164: phoneE164,
+      first_name: merged.first_name ?? null,
+      last_name: merged.last_name ?? null,
+      company: merged.company ?? null,
+      title: merged.title ?? null,
+      city: merged.city ?? null,
+      region: merged.region ?? null,
+      country: merged.country ?? null,
+      linkedin_url: (merged as { linkedin_url?: string | null }).linkedin_url ?? null,
+      instagram_handle: (merged as { instagram_handle?: string | null }).instagram_handle ?? null,
+      icp_segment: merged.icp_segment ?? null,
+      client_icp_targets: opts.clientIcpTargets ?? null,
+      verified_at: null, // scrubbed right now
+      source_trust_tier: sourceTrustTier,
+    });
+
+    const export_tier = assignTier({
+      composite_score: scores.composite_score,
+      is_suppressed: !!isSuppressed,
+      is_duplicate: isDuplicate,
+      is_scrubbed: isScrubbed,
+      policy: opts.exportPolicy ?? null,
+    });
+
     results.push({
-      ...row,
-      ...enrichedFields,
+      ...merged,
       normalized_email: normalized,
       phone_e164: phoneE164,
       syntax_valid: !!emailResult?.syntax_valid,
@@ -127,10 +177,33 @@ export async function scrubBatch(
         emailResult?.reject_reason ??
         (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined),
       is_scrubbed: isScrubbed,
+      ...scores,
+      export_tier,
+      verified_at: new Date().toISOString(),
+      verified_by: 'scrub-pipeline',
     });
   }
 
   return results;
+}
+
+/**
+ * Score/tier fields to merge into a `leads` insert payload. composite_score
+ * is intentionally omitted — it's a stored generated column in the DB and
+ * rejects explicit inserts.
+ */
+export function scoringInsertFields(s: ScrubbedLead) {
+  return {
+    identity_score: s.identity_score,
+    icp_fit_score: s.icp_fit_score,
+    completeness_score: s.completeness_score,
+    freshness_score: s.freshness_score,
+    intent_score: s.intent_score,
+    source_confidence: s.source_confidence,
+    export_tier: s.export_tier,
+    verified_at: s.verified_at,
+    verified_by: s.verified_by,
+  };
 }
 
 async function sha256(input: string): Promise<string> {

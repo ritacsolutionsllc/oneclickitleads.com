@@ -24,16 +24,17 @@ export default function Landing() {
       {/* Hero */}
       <section className="mx-auto max-w-6xl px-6 py-24">
         <p className="text-sm uppercase tracking-widest text-emerald-700 mb-3">
-          Lead data, the clean way
+          Quality-scored lead data
         </p>
         <h1 className="text-5xl md:text-6xl font-semibold tracking-tight leading-tight">
-          Scrubbed leads.<br />
-          <span className="text-emerald-600">Delivered in one click.</span>
+          Only the leads worth buying.<br />
+          <span className="text-emerald-600">Tiered, scored, and shipped.</span>
         </h1>
         <p className="mt-6 text-lg text-neutral-700 max-w-2xl">
-          OneClickitLeads gathers, validates, and de-duplicates lead data, then
-          exports it straight into smartly.io, Klaviyo, Meta, or CSV. Stop
-          paying for bounces — only send to inboxes that open.
+          Every lead gets a 0–100 composite score built from six weighted
+          signals — identity, ICP fit, completeness, freshness, intent, and
+          source trust. Only the tiers you approve ship automatically to
+          smartly.io, Klaviyo, Meta, or CSV.
         </p>
         <div className="mt-8 flex flex-wrap gap-4">
           <Link
@@ -49,10 +50,10 @@ export default function Landing() {
             See pricing
           </a>
         </div>
-        <div className="mt-10 flex items-center gap-8 text-sm text-neutral-500">
-          <span>✅ 97% deliverability target</span>
+        <div className="mt-10 flex flex-wrap items-center gap-x-8 gap-y-2 text-sm text-neutral-500">
+          <span>✅ Six-signal composite score</span>
+          <span>✅ Tier-gated exports</span>
           <span>✅ CCPA + GDPR compliant</span>
-          <span>✅ Ships in &lt; 15 min</span>
         </div>
       </section>
 
@@ -60,12 +61,13 @@ export default function Landing() {
       <section id="how" className="border-t border-neutral-200 bg-white">
         <div className="mx-auto max-w-6xl px-6 py-20">
           <h2 className="text-3xl font-semibold mb-12">How it works</h2>
-          <ol className="grid md:grid-cols-4 gap-8">
+          <ol className="grid md:grid-cols-5 gap-8">
             {[
-              ['Source', 'Pull from Apollo, Common Room, purchased lists, or ethical scraping of public directories.'],
-              ['Scrub', 'Syntax + MX + SMTP check, dedupe, suppression filter — every lead passes 5 gates.'],
-              ['Enrich', 'Hunter.io and Apollo fill the gaps: title, company, location, social.'],
-              ['Export', 'One click to smartly.io Custom Audience, CSV, or your CRM via API.'],
+              ['Source', 'Pull from Apollo, Common Room, purchased lists, or ethical scraping of public directories. Every source stamped with a trust tier 1–5.'],
+              ['Scrub', 'Syntax + MX + SMTP check, dedupe, suppression filter — every lead passes 5 gates before it gets scored.'],
+              ['Enrich', 'Hunter.io and Apollo fill the gaps: title, company, location, social — feeding the completeness and intent sub-scores.'],
+              ['Score', 'Six sub-scores combine into a 0–100 composite, then map to tiers: premium, standard, prospecting, review, hold, discard.'],
+              ['Export', 'Only tiers you allow ship automatically to smartly.io, CSV, or your CRM. Review-tier leads queue for manual approval.'],
             ].map(([t, d], i) => (
               <li key={t} className="relative">
                 <div className="text-5xl font-semibold text-emerald-200">{i + 1}</div>

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
-import { scrubBatch } from '@/utils/scrub/pipeline';
+import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
 
 /**
  * POST /api/ingest
@@ -21,6 +21,15 @@ export async function POST(req: NextRequest) {
   const { client_slug, source, rows } = body ?? {};
   if (!client_slug || !Array.isArray(rows)) {
     return NextResponse.json({ error: 'bad request' }, { status: 400 });
+  }
+  // Bound the batch so a single request can't exhaust memory/timeout.
+  // Callers with more data should paginate; 50k already takes ~5min.
+  const MAX_ROWS = 50_000;
+  if (rows.length > MAX_ROWS) {
+    return NextResponse.json(
+      { error: `too many rows: ${rows.length} (max ${MAX_ROWS} per request)` },
+      { status: 413 }
+    );
   }
 
   const supabase = createAdminClient();
@@ -65,6 +74,7 @@ export async function POST(req: NextRequest) {
     is_suppressed: s.is_suppressed,
     scrub_score: s.scrub_score,
     reject_reason: s.reject_reason,
+    ...scoringInsertFields(s),
     raw: s,
     scrubbed_at: new Date().toISOString(),
   }));

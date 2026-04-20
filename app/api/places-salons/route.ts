@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
-import { scrubBatch } from '@/utils/scrub/pipeline';
+import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
 
 /**
  * GET /api/places-salons?query=eyebrow+salon+Los+Angeles+CA&client=chella&segment=salon
@@ -13,11 +13,19 @@ import { scrubBatch } from '@/utils/scrub/pipeline';
  * Paginates up to 3 pages (60 results). Dedupes by Google place_id and
  * feeds rows through the scrub pipeline.
  */
+const ALLOWED_SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as const;
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const query = searchParams.get('query') || 'eyebrow salon Los Angeles CA';
+  const query = (searchParams.get('query') || 'eyebrow salon Los Angeles CA').slice(0, 200);
   const clientSlug = searchParams.get('client') || 'chella';
   const segment = searchParams.get('segment') || 'salon';
+  if (!(ALLOWED_SEGMENTS as readonly string[]).includes(segment)) {
+    return NextResponse.json(
+      { error: `segment must be one of ${ALLOWED_SEGMENTS.join(', ')}` },
+      { status: 400 }
+    );
+  }
   const key = process.env.GOOGLE_PLACES_KEY;
   if (!key) return NextResponse.json({ error: 'missing GOOGLE_PLACES_KEY' }, { status: 500 });
 
@@ -132,6 +140,7 @@ export async function GET(request: Request) {
     smtp_valid: s.smtp_valid,
     scrub_score: s.scrub_score,
     reject_reason: s.reject_reason,
+    ...scoringInsertFields(s),
     raw: s,
     scrubbed_at: new Date().toISOString(),
   }));
