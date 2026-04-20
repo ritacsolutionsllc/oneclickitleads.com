@@ -3,6 +3,7 @@ import { createAdminClient } from '@/utils/supabase/server';
 import Papa from 'papaparse';
 import { normalizeEmail } from '@/utils/scrub/email';
 import { normalizePhone } from '@/utils/scrub/phone';
+import { scoreLead, toLeadColumns } from '@/lib/scoring/quality';
 
 /**
  * POST /api/import/shopify
@@ -59,32 +60,52 @@ export async function POST(req: NextRequest) {
     reason: 'existing_customer',
   }));
 
-  const seedRows = rows.map((r) => ({
-    client_id: client.id,
-    source_id: src?.id,
-    first_name: r['First Name'] || null,
-    last_name: r['Last Name'] || null,
-    email: normalizeEmail(r['Email']),
-    phone_e164: r['Phone'] ? normalizePhone(r['Phone']) : null,
-    city: r['City'] || null,
-    region: r['Province'] || null,
-    country: r['Country'] || null,
-    icp_segment: 'b2c_beauty',
-    tags: [
-      'shopify',
-      'existing_customer',
-      ...(Number(r['Total Orders'] ?? 0) >= 2 ? ['repeat_buyer'] : []),
-      ...((r['Accepts Email Marketing'] ?? '').toLowerCase() === 'yes' ? ['opted_in'] : []),
-    ],
-    // Treat as scrubbed: it's first-party, already-validated purchase data.
-    is_scrubbed: true,
-    syntax_valid: true,
-    mx_valid: true,
-    smtp_valid: true,
-    scrub_score: 100,
-    raw: r,
-    scrubbed_at: new Date().toISOString(),
-  }));
+  const seedRows = rows.map((r) => {
+    const email = normalizeEmail(r['Email']);
+    const phone = r['Phone'] ? normalizePhone(r['Phone']) : null;
+    const base = {
+      client_id: client.id,
+      source_id: src?.id,
+      first_name: r['First Name'] || null,
+      last_name: r['Last Name'] || null,
+      email,
+      phone_e164: phone,
+      city: r['City'] || null,
+      region: r['Province'] || null,
+      country: r['Country'] || null,
+      icp_segment: 'b2c_beauty',
+      tags: [
+        'shopify',
+        'existing_customer',
+        ...(Number(r['Total Orders'] ?? 0) >= 2 ? ['repeat_buyer'] : []),
+        ...((r['Accepts Email Marketing'] ?? '').toLowerCase() === 'yes' ? ['opted_in'] : []),
+      ],
+      // Treat as scrubbed: it's first-party, already-validated purchase data.
+      is_scrubbed: true,
+      syntax_valid: true,
+      mx_valid: true,
+      smtp_valid: true,
+      scrub_score: 100,
+      raw: r,
+      scrubbed_at: new Date().toISOString(),
+    };
+    const quality = scoreLead({
+      email: base.email,
+      phone_e164: base.phone_e164,
+      syntax_valid: true,
+      mx_valid: true,
+      smtp_valid: true,
+      first_name: base.first_name,
+      last_name: base.last_name,
+      city: base.city,
+      region: base.region,
+      country: base.country,
+      icp_segment: base.icp_segment,
+      observed_at: new Date(),
+      source_kind: 'shopify',
+    });
+    return { ...base, ...toLeadColumns(quality) };
+  });
 
   let suppressed = 0;
   let seeded = 0;

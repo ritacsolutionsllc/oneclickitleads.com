@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scoreLead, toLeadColumns } from '@/lib/scoring/quality';
+import { hasMxRecord } from '@/utils/scrub/email';
 
 /**
  * POST /api/harvest-emails
@@ -43,7 +45,7 @@ export async function POST(req: NextRequest) {
   // Leads with a website (in raw->source_url) but no email yet.
   let q = supabase
     .from('leads')
-    .select('id, company, city, region, raw')
+    .select('id, company, first_name, last_name, title, phone_e164, city, region, country, icp_segment, raw')
     .eq('client_id', client.id)
     .is('email', null)
     .not('raw->>source_url', 'is', null)
@@ -67,13 +69,39 @@ export async function POST(req: NextRequest) {
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
       if (hit.email) {
+        // Harvested from public website → still tier3. Re-score so the
+        // row picks up the new identity signal and either becomes
+        // export-eligible (if MX verifies) or moves to the review queue
+        // with explicit reason codes.
+        const mxOk = await hasMxRecord(hit.email);
+        const quality = scoreLead({
+          email: hit.email,
+          phone_e164: lead.phone_e164 ?? null,
+          syntax_valid: true,
+          mx_valid: mxOk,
+          smtp_valid: null,
+          first_name: lead.first_name ?? null,
+          last_name: lead.last_name ?? null,
+          title: lead.title ?? null,
+          company: lead.company ?? null,
+          city: lead.city ?? null,
+          region: lead.region ?? null,
+          country: lead.country ?? null,
+          icp_segment: lead.icp_segment ?? null,
+          observed_at: new Date(),
+          source_kind: 'scraped',
+        });
+
         await supabase
           .from('leads')
           .update({
             email: hit.email,
             syntax_valid: true,
+            mx_valid: mxOk,
+            is_scrubbed: mxOk,
             reject_reason: null,
             raw: { ...(lead.raw as object), harvested_from: hit.found_on },
+            ...toLeadColumns(quality),
           })
           .eq('id', lead.id);
       }

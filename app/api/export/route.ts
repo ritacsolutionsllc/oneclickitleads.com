@@ -47,15 +47,20 @@ export async function GET(req: NextRequest) {
   const plan = planByTier(client.plan);
   const rowLimit = maxRowsForExport(plan, cap.remaining ?? 10_000);
 
+  // Export gating: only rows the quality engine has marked export_eligible
+  // can leave the system. RLS still enforces tenant isolation; this is the
+  // second layer of defense.
   let q = supabase
     .from('leads')
-    .select('email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, scrub_score')
+    .select('email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, scrub_score, quality_score, quality_tier, source_tier, verified_at')
     .eq('client_id', client.id)
-    .eq('is_scrubbed', true)
+    .eq('export_eligible', true)
+    .in('review_state', ['none', 'approved'])
+    .order('quality_score', { ascending: false, nullsFirst: false })
     .order('lead_quality_score', { ascending: false, nullsFirst: false })
     .limit(rowLimit);
   if (segment) q = q.eq('icp_segment', segment);
-  if (minScore) q = q.gte('scrub_score', minScore);
+  if (minScore) q = q.gte('quality_score', minScore);
 
   const { data: leads, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

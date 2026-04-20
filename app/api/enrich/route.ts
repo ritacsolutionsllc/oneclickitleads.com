@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scoreLead, toLeadColumns } from '@/lib/scoring/quality';
+import { hasMxRecord } from '@/utils/scrub/email';
 
 /**
  * POST /api/enrich
@@ -25,7 +27,7 @@ export async function POST(req: NextRequest) {
 
   const { data: targets } = await supabase
     .from('leads')
-    .select('id, website')
+    .select('id, website, company, title, icp_segment, city, region, country, phone_e164, source_tier')
     .eq('client_id', client.id)
     .is('email', null)
     .not('website', 'is', null)
@@ -44,6 +46,31 @@ export async function POST(req: NextRequest) {
     };
     const top = data?.emails?.[0];
     if (!top?.value || (top.confidence ?? 0) < 70) continue;
+
+    // Re-score the enriched row. Hunter-provided emails are Hunter-verified
+    // (confidence >= 70) so we credit the lead with syntax+MX here and
+    // confirm MX in-process for belt-and-suspenders.
+    const mxOk = await hasMxRecord(top.value);
+    const quality = scoreLead({
+      email: top.value,
+      phone_e164: t.phone_e164 ?? null,
+      syntax_valid: true,
+      mx_valid: mxOk,
+      smtp_valid: null,
+      first_name: top.first_name ?? null,
+      last_name: top.last_name ?? null,
+      title: top.position ?? null,
+      company: t.company ?? null,
+      icp_segment: t.icp_segment ?? null,
+      city: t.city ?? null,
+      region: t.region ?? null,
+      country: t.country ?? null,
+      observed_at: new Date(),
+      // Hunter.io is a tier2 verified B2B directory — a huge upgrade over
+      // the row's original tier3 scraped provenance.
+      source_kind: 'hunter',
+    });
+
     await supabase
       .from('leads')
       .update({
@@ -51,6 +78,10 @@ export async function POST(req: NextRequest) {
         first_name: top.first_name ?? null,
         last_name: top.last_name ?? null,
         title: top.position ?? null,
+        syntax_valid: true,
+        mx_valid: mxOk,
+        is_scrubbed: mxOk,
+        ...toLeadColumns(quality),
       })
       .eq('id', t.id);
     updated++;

@@ -6,6 +6,7 @@
 import { scrubEmail, normalizeEmail } from './email';
 import { normalizePhone } from './phone';
 import { enrich } from './enrich';
+import { scoreLead, type QualityOutput } from '@/lib/scoring/quality';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface RawLead {
@@ -36,13 +37,21 @@ export interface ScrubbedLead extends RawLead {
   scrub_score: number;
   reject_reason?: string;
   is_scrubbed: boolean;
+  /** Quality engine output. Populated for every row the pipeline sees. */
+  quality: QualityOutput;
+}
+
+export interface ScrubOptions {
+  doEnrich?: boolean;
+  /** Source kind to feed into the quality engine (e.g. 'scraped', 'apollo'). */
+  sourceKind?: string;
 }
 
 export async function scrubBatch(
   supabase: SupabaseClient,
   clientId: string,
   rows: RawLead[],
-  opts: { doEnrich?: boolean } = { doEnrich: true }
+  opts: ScrubOptions = { doEnrich: true }
 ): Promise<ScrubbedLead[]> {
   // 1. pull suppressions once
   const { data: sup } = await supabase
@@ -111,9 +120,31 @@ export async function scrubBatch(
       !isDuplicate &&
       !isSuppressed;
 
+    const enrichedRow = { ...row, ...enrichedFields } as RawLead;
+
+    const quality = scoreLead({
+      email: normalized || null,
+      phone_e164: phoneE164,
+      syntax_valid: emailResult?.syntax_valid ?? null,
+      mx_valid: emailResult?.mx_valid ?? null,
+      smtp_valid: emailResult?.smtp_valid ?? null,
+      is_disposable: emailResult?.is_disposable ?? null,
+      is_duplicate: isDuplicate,
+      is_suppressed: !!isSuppressed,
+      first_name: enrichedRow.first_name ?? null,
+      last_name: enrichedRow.last_name ?? null,
+      company: enrichedRow.company ?? null,
+      title: enrichedRow.title ?? null,
+      city: enrichedRow.city ?? null,
+      region: enrichedRow.region ?? null,
+      country: enrichedRow.country ?? null,
+      icp_segment: enrichedRow.icp_segment ?? null,
+      observed_at: new Date(),
+      source_kind: opts.sourceKind ?? null,
+    });
+
     results.push({
-      ...row,
-      ...enrichedFields,
+      ...enrichedRow,
       normalized_email: normalized,
       phone_e164: phoneE164,
       syntax_valid: !!emailResult?.syntax_valid,
@@ -127,6 +158,7 @@ export async function scrubBatch(
         emailResult?.reject_reason ??
         (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined),
       is_scrubbed: isScrubbed,
+      quality,
     });
   }
 

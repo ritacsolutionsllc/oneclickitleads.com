@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { toLeadColumns } from '@/lib/scoring/quality';
 
 /**
  * POST /api/ingest
@@ -39,7 +40,9 @@ export async function POST(req: NextRequest) {
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    sourceKind: source?.kind ?? 'api',
+  });
 
   const inserts = scrubbed.map((s) => ({
     client_id: client.id,
@@ -67,6 +70,7 @@ export async function POST(req: NextRequest) {
     reject_reason: s.reject_reason,
     raw: s,
     scrubbed_at: new Date().toISOString(),
+    ...toLeadColumns(s.quality),
   }));
 
   // upsert on (client_id, email_hash) — hash is computed by the DB trigger
@@ -76,5 +80,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ingested: inserts.length,
     clean: inserts.filter((r) => r.is_scrubbed).length,
+    export_eligible: inserts.filter((r) => r.export_eligible).length,
+    review_queue: inserts.filter((r) => r.review_state === 'pending' || r.review_state === 'quarantined').length,
   });
 }

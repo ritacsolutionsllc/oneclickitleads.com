@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { toLeadColumns } from '@/lib/scoring/quality';
 
 /**
  * POST /api/scrape-webscrapingai
@@ -128,7 +129,9 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    sourceKind: 'webscraping_ai',
+  });
   const toInsert = scrubbed.map((s) => ({
     client_id: client.id,
     source_id: src?.id,
@@ -150,6 +153,7 @@ export async function POST(req: NextRequest) {
     reject_reason: s.reject_reason,
     raw: s,
     scrubbed_at: new Date().toISOString(),
+    ...toLeadColumns(s.quality),
   }));
   const { error } = await supabase.from('leads').insert(toInsert);
 
@@ -160,6 +164,8 @@ export async function POST(req: NextRequest) {
     with_phone: rows.filter((r) => r.phone).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    export_eligible: toInsert.filter((r) => r.export_eligible).length,
+    quarantined: toInsert.filter((r) => r.review_state === 'quarantined').length,
     errors,
     error: error?.message,
   });

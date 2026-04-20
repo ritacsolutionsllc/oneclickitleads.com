@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { toLeadColumns } from '@/lib/scoring/quality';
 
 /**
  * GET /api/places-salons?query=eyebrow+salon+Los+Angeles+CA&client=chella&segment=salon
@@ -111,7 +112,9 @@ export async function GET(request: Request) {
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    sourceKind: 'google_places',
+  });
 
   const toInsert = scrubbed.map((s) => ({
     client_id: client.id,
@@ -134,6 +137,7 @@ export async function GET(request: Request) {
     reject_reason: s.reject_reason,
     raw: s,
     scrubbed_at: new Date().toISOString(),
+    ...toLeadColumns(s.quality),
   }));
 
   const { error } = await supabase.from('leads').insert(toInsert);
@@ -145,6 +149,8 @@ export async function GET(request: Request) {
     with_website: rows.filter((r) => r.source_url).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    export_eligible: toInsert.filter((r) => r.export_eligible).length,
+    quarantined: toInsert.filter((r) => r.review_state === 'quarantined').length,
     error: error?.message,
   });
 }

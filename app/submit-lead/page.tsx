@@ -1,4 +1,5 @@
 import { createClient } from '@/utils/supabase/server';
+import { scoreLead, toLeadColumns } from '@/lib/scoring/quality';
 import { redirect } from 'next/navigation';
 
 type SearchParams = { client?: string; error?: string; ok?: string };
@@ -52,6 +53,20 @@ export default async function SubmitLead({
         );
       }
 
+      // Self-signup with explicit consent is tier1 (first-party). We still
+      // run scoring so the row carries quality/reason metadata alongside
+      // every other lead in the system.
+      const quality = scoreLead({
+        email,
+        phone_e164: phone || null,
+        first_name,
+        last_name: last_name || null,
+        icp_segment,
+        observed_at: new Date(),
+        source_kind: 'self_signup',
+        syntax_valid: true,
+      });
+
       const { error: insertErr } = await supabase.from('leads').insert({
         client_id: client!.id,
         email,
@@ -59,7 +74,11 @@ export default async function SubmitLead({
         last_name: last_name || null,
         phone_e164: phone || null,
         icp_segment,
+        is_scrubbed: true,
+        syntax_valid: true,
         raw: Object.fromEntries(formData.entries()),
+        scrubbed_at: new Date().toISOString(),
+        ...toLeadColumns(quality),
       });
 
       if (insertErr) {
