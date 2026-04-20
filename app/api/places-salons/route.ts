@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { scoreToDbFields } from '@/utils/scoring/score';
 
 /**
  * GET /api/places-salons?query=eyebrow+salon+Los+Angeles+CA&client=chella&segment=salon
@@ -91,6 +92,8 @@ export async function GET(request: Request) {
         place_id: p.id,
         primary_type: p.primaryType,
         opening_hours: p.regularOpeningHours?.weekdayDescriptions,
+        rating: p.rating,
+        rating_count: p.userRatingCount,
         raw_rating: p.rating,
         raw_rating_count: p.userRatingCount,
       };
@@ -105,36 +108,49 @@ export async function GET(request: Request) {
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: 'scraped',
+      kind: 'google_places',
+      tier: 'directory',
       label: `google_places: ${query}`,
       source_url: 'https://places.googleapis.com/v1/places:searchText',
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const verifiedAt = new Date();
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    sourceKind: 'google_places',
+    verifiedAt,
+  });
 
-  const toInsert = scrubbed.map((s) => ({
-    client_id: client.id,
-    source_id: src?.id,
-    company: s.company,
-    phone_e164: s.phone_e164,
-    email: s.normalized_email || null,
-    title: s.title,
-    icp_segment: s.icp_segment,
-    city: s.city,
-    region: s.region,
-    country: s.country,
-    tags: s.tags ?? [],
-    is_scrubbed: s.is_scrubbed,
-    is_duplicate: s.is_duplicate,
-    syntax_valid: s.syntax_valid,
-    mx_valid: s.mx_valid,
-    smtp_valid: s.smtp_valid,
-    scrub_score: s.scrub_score,
-    reject_reason: s.reject_reason,
-    raw: s,
-    scrubbed_at: new Date().toISOString(),
-  }));
+  const toInsert = scrubbed.map((s) => {
+    const raw = s as ScrubbedExtras;
+    return {
+      client_id: client.id,
+      source_id: src?.id,
+      company: s.company,
+      phone_e164: s.phone_e164,
+      email: s.normalized_email || null,
+      title: s.title,
+      icp_segment: s.icp_segment,
+      city: s.city,
+      region: s.region,
+      country: s.country,
+      tags: s.tags ?? [],
+      rating: raw.raw_rating ?? null,
+      rating_count: raw.raw_rating_count ?? null,
+      website: raw.source_url ?? null,
+      is_scrubbed: s.is_scrubbed,
+      is_duplicate: s.is_duplicate,
+      syntax_valid: s.syntax_valid,
+      mx_valid: s.mx_valid,
+      smtp_valid: s.smtp_valid,
+      scrub_score: s.scrub_score,
+      reject_reason: s.reject_reason,
+      raw: s,
+      scrubbed_at: verifiedAt.toISOString(),
+      verified_at: verifiedAt.toISOString(),
+      ...scoreToDbFields(s.score),
+    };
+  });
 
   const { error } = await supabase.from('leads').insert(toInsert);
 
@@ -145,8 +161,17 @@ export async function GET(request: Request) {
     with_website: rows.filter((r) => r.source_url).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    eligible: toInsert.filter((r) => r.export_eligibility === 'eligible').length,
+    review: toInsert.filter((r) => r.export_eligibility === 'review').length,
+    quarantined: toInsert.filter((r) => r.export_eligibility === 'quarantined').length,
     error: error?.message,
   });
+}
+
+interface ScrubbedExtras {
+  raw_rating?: number;
+  raw_rating_count?: number;
+  source_url?: string;
 }
 
 interface AddressComponent {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { sourceTierFromKind, scoreToDbFields } from '@/utils/scoring/score';
 
 /**
  * POST /api/ingest
@@ -29,17 +30,25 @@ export async function POST(req: NextRequest) {
     .from('clients').select('id').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
+  const sourceKind = source?.kind ?? 'api';
+  const sourceTier = sourceTierFromKind(sourceKind);
+
   const { data: srcRow } = await supabase
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: source?.kind ?? 'api',
+      kind: sourceKind,
+      tier: sourceTier,
       label: source?.label ?? null,
       source_url: source?.source_url ?? null,
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const verifiedAt = new Date();
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    sourceKind,
+    verifiedAt,
+  });
 
   const inserts = scrubbed.map((s) => ({
     client_id: client.id,
@@ -66,7 +75,9 @@ export async function POST(req: NextRequest) {
     scrub_score: s.scrub_score,
     reject_reason: s.reject_reason,
     raw: s,
-    scrubbed_at: new Date().toISOString(),
+    scrubbed_at: verifiedAt.toISOString(),
+    verified_at: verifiedAt.toISOString(),
+    ...scoreToDbFields(s.score),
   }));
 
   // upsert on (client_id, email_hash) — hash is computed by the DB trigger
@@ -76,5 +87,8 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ingested: inserts.length,
     clean: inserts.filter((r) => r.is_scrubbed).length,
+    eligible: inserts.filter((r) => r.export_eligibility === 'eligible').length,
+    review: inserts.filter((r) => r.export_eligibility === 'review').length,
+    quarantined: inserts.filter((r) => r.export_eligibility === 'quarantined').length,
   });
 }

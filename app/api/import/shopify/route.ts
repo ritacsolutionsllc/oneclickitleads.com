@@ -3,6 +3,7 @@ import { createAdminClient } from '@/utils/supabase/server';
 import Papa from 'papaparse';
 import { normalizeEmail } from '@/utils/scrub/email';
 import { normalizePhone } from '@/utils/scrub/phone';
+import { scoreLead, scoreToDbFields } from '@/utils/scoring/score';
 
 /**
  * POST /api/import/shopify
@@ -44,7 +45,8 @@ export async function POST(req: NextRequest) {
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: 'firstparty',
+      kind: 'shopify',
+      tier: 'firstparty',
       label: `shopify import ${file.name} (${mode})`,
       source_url: 'shopify:customers.csv',
     })
@@ -59,32 +61,59 @@ export async function POST(req: NextRequest) {
     reason: 'existing_customer',
   }));
 
-  const seedRows = rows.map((r) => ({
-    client_id: client.id,
-    source_id: src?.id,
-    first_name: r['First Name'] || null,
-    last_name: r['Last Name'] || null,
-    email: normalizeEmail(r['Email']),
-    phone_e164: r['Phone'] ? normalizePhone(r['Phone']) : null,
-    city: r['City'] || null,
-    region: r['Province'] || null,
-    country: r['Country'] || null,
-    icp_segment: 'b2c_beauty',
-    tags: [
+  const verifiedAt = new Date();
+
+  const seedRows = rows.map((r) => {
+    const tags = [
       'shopify',
       'existing_customer',
       ...(Number(r['Total Orders'] ?? 0) >= 2 ? ['repeat_buyer'] : []),
       ...((r['Accepts Email Marketing'] ?? '').toLowerCase() === 'yes' ? ['opted_in'] : []),
-    ],
-    // Treat as scrubbed: it's first-party, already-validated purchase data.
-    is_scrubbed: true,
-    syntax_valid: true,
-    mx_valid: true,
-    smtp_valid: true,
-    scrub_score: 100,
-    raw: r,
-    scrubbed_at: new Date().toISOString(),
-  }));
+    ];
+    const email = normalizeEmail(r['Email']);
+    const phone = r['Phone'] ? normalizePhone(r['Phone']) : null;
+
+    const score = scoreLead({
+      email,
+      phone_e164: phone,
+      first_name: r['First Name'] || null,
+      last_name: r['Last Name'] || null,
+      icp_segment: 'b2c_beauty',
+      city: r['City'] || null,
+      region: r['Province'] || null,
+      country: r['Country'] || null,
+      tags,
+      syntax_valid: true,
+      mx_valid: true,
+      smtp_valid: true,       // first-party, already transacted → trusted
+      source_kind: 'shopify', // resolves to firstparty tier
+      verified_at: verifiedAt,
+    });
+
+    return {
+      client_id: client.id,
+      source_id: src?.id,
+      first_name: r['First Name'] || null,
+      last_name: r['Last Name'] || null,
+      email,
+      phone_e164: phone,
+      city: r['City'] || null,
+      region: r['Province'] || null,
+      country: r['Country'] || null,
+      icp_segment: 'b2c_beauty',
+      tags,
+      // Treat as scrubbed: it's first-party, already-validated purchase data.
+      is_scrubbed: true,
+      syntax_valid: true,
+      mx_valid: true,
+      smtp_valid: true,
+      scrub_score: 100,
+      raw: r,
+      scrubbed_at: verifiedAt.toISOString(),
+      verified_at: verifiedAt.toISOString(),
+      ...scoreToDbFields(score),
+    };
+  });
 
   let suppressed = 0;
   let seeded = 0;

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scoreLead, scoreToDbFields } from '@/utils/scoring/score';
 
 /**
  * POST /api/enrich
@@ -25,7 +26,7 @@ export async function POST(req: NextRequest) {
 
   const { data: targets } = await supabase
     .from('leads')
-    .select('id, website')
+    .select('id, website, phone_e164, company, title, icp_segment, city, region, country, tags, source_tier, rating, rating_count')
     .eq('client_id', client.id)
     .is('email', null)
     .not('website', 'is', null)
@@ -44,6 +45,30 @@ export async function POST(req: NextRequest) {
     };
     const top = data?.emails?.[0];
     if (!top?.value || (top.confidence ?? 0) < 70) continue;
+
+    const verifiedAt = new Date();
+    const score = scoreLead({
+      email: top.value,
+      phone_e164: t.phone_e164 ?? null,
+      first_name: top.first_name ?? null,
+      last_name: top.last_name ?? null,
+      company: t.company ?? null,
+      title: top.position ?? t.title ?? null,
+      icp_segment: t.icp_segment ?? null,
+      city: t.city ?? null,
+      region: t.region ?? null,
+      country: t.country ?? null,
+      tags: t.tags ?? null,
+      syntax_valid: true,
+      mx_valid: true,         // Hunter only returns deliverable domains
+      smtp_valid: (top.confidence ?? 0) >= 90,
+      source_kind: 'hunter',
+      source_tier: t.source_tier ?? 'verified_api',
+      rating: t.rating ?? null,
+      rating_count: t.rating_count ?? null,
+      verified_at: verifiedAt,
+    });
+
     await supabase
       .from('leads')
       .update({
@@ -51,6 +76,11 @@ export async function POST(req: NextRequest) {
         first_name: top.first_name ?? null,
         last_name: top.last_name ?? null,
         title: top.position ?? null,
+        syntax_valid: true,
+        mx_valid: true,
+        smtp_valid: (top.confidence ?? 0) >= 90,
+        verified_at: verifiedAt.toISOString(),
+        ...scoreToDbFields(score),
       })
       .eq('id', t.id);
     updated++;

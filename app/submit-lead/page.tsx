@@ -1,5 +1,6 @@
 import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import { scoreLead, scoreToDbFields } from '@/utils/scoring/score';
 
 type SearchParams = { client?: string; error?: string; ok?: string };
 
@@ -52,6 +53,22 @@ export default async function SubmitLead({
         );
       }
 
+      const verifiedAt = new Date();
+      // Public form = first-party opted-in. Score immediately so every row has
+      // an eligibility state from the moment it lands.
+      const score = scoreLead({
+        email,
+        phone_e164: phone || null,
+        first_name,
+        last_name: last_name || null,
+        icp_segment,
+        tags: ['public_form', 'opted_in'],
+        syntax_valid: true,
+        mx_valid: true,
+        source_kind: 'firstparty',
+        verified_at: verifiedAt,
+      });
+
       const { error: insertErr } = await supabase.from('leads').insert({
         client_id: client!.id,
         email,
@@ -59,6 +76,13 @@ export default async function SubmitLead({
         last_name: last_name || null,
         phone_e164: phone || null,
         icp_segment,
+        tags: ['public_form', 'opted_in'],
+        syntax_valid: true,
+        mx_valid: true,
+        is_scrubbed: true,
+        verified_at: verifiedAt.toISOString(),
+        scrubbed_at: verifiedAt.toISOString(),
+        ...scoreToDbFields(score),
         raw: Object.fromEntries(formData.entries()),
       });
 

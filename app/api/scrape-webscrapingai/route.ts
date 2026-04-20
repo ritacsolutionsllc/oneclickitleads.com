@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { scoreToDbFields } from '@/utils/scoring/score';
 
 /**
  * POST /api/scrape-webscrapingai
@@ -84,7 +85,8 @@ export async function POST(req: NextRequest) {
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: 'scraped',
+      kind: 'webscraping',
+      tier: 'scraped',
       label: `webscraping.ai: ${urls.length} url${urls.length > 1 ? 's' : ''}${segment ? ` (${segment})` : ''}`,
       source_url: 'https://api.webscraping.ai/html',
     })
@@ -128,7 +130,11 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const verifiedAt = new Date();
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    sourceKind: 'webscraping',
+    verifiedAt,
+  });
   const toInsert = scrubbed.map((s) => ({
     client_id: client.id,
     source_id: src?.id,
@@ -149,7 +155,9 @@ export async function POST(req: NextRequest) {
     scrub_score: s.scrub_score,
     reject_reason: s.reject_reason,
     raw: s,
-    scrubbed_at: new Date().toISOString(),
+    scrubbed_at: verifiedAt.toISOString(),
+    verified_at: verifiedAt.toISOString(),
+    ...scoreToDbFields(s.score),
   }));
   const { error } = await supabase.from('leads').insert(toInsert);
 
@@ -160,6 +168,9 @@ export async function POST(req: NextRequest) {
     with_phone: rows.filter((r) => r.phone).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    eligible: toInsert.filter((r) => r.export_eligibility === 'eligible').length,
+    review: toInsert.filter((r) => r.export_eligibility === 'review').length,
+    quarantined: toInsert.filter((r) => r.export_eligibility === 'quarantined').length,
     errors,
     error: error?.message,
   });

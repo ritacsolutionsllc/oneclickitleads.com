@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scoreLead, scoreToDbFields } from '@/utils/scoring/score';
 
 /**
  * POST /api/harvest-emails
@@ -43,7 +44,7 @@ export async function POST(req: NextRequest) {
   // Leads with a website (in raw->source_url) but no email yet.
   let q = supabase
     .from('leads')
-    .select('id, company, city, region, raw')
+    .select('id, company, city, region, country, phone_e164, title, first_name, last_name, icp_segment, tags, source_tier, rating, rating_count, raw')
     .eq('client_id', client.id)
     .is('email', null)
     .not('raw->>source_url', 'is', null)
@@ -67,12 +68,39 @@ export async function POST(req: NextRequest) {
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
       if (hit.email) {
+        const verifiedAt = new Date();
+        // Harvesting resolves the scraped -> verifiable path but the source
+        // is still scraped HTML, so keep source_tier honest and route to
+        // review unless downstream SMTP verification promotes it later.
+        const score = scoreLead({
+          email: hit.email,
+          phone_e164: lead.phone_e164 ?? null,
+          first_name: lead.first_name ?? null,
+          last_name: lead.last_name ?? null,
+          company: lead.company ?? null,
+          title: lead.title ?? null,
+          icp_segment: lead.icp_segment ?? null,
+          city: lead.city ?? null,
+          region: lead.region ?? null,
+          country: lead.country ?? null,
+          tags: lead.tags ?? null,
+          syntax_valid: true,
+          mx_valid: null,
+          smtp_valid: null,
+          source_tier: lead.source_tier ?? 'scraped',
+          rating: lead.rating ?? null,
+          rating_count: lead.rating_count ?? null,
+          verified_at: verifiedAt,
+        });
+
         await supabase
           .from('leads')
           .update({
             email: hit.email,
             syntax_valid: true,
             reject_reason: null,
+            verified_at: verifiedAt.toISOString(),
+            ...scoreToDbFields(score),
             raw: { ...(lead.raw as object), harvested_from: hit.found_on },
           })
           .eq('id', lead.id);

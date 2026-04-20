@@ -7,9 +7,11 @@ import { planByTier } from '@/lib/plans';
 /**
  * GET /api/export?client=chella&format=csv|smartly&segment=salon&min_score=60
  *
- * - Only export rows where is_scrubbed = true (defense in depth; RLS also enforces tenant).
+ * - Only export rows where export_eligibility = 'eligible'. Leads in 'review',
+ *   'quarantined', or 'suppressed' never leave the building from this route.
  * - Plan cap enforced via v_client_usage.
- * - Writes an `exports` row for audit.
+ * - Writes an `exports` row for audit and marks exported leads so we can
+ *   see what left and when.
  */
 export async function GET(req: NextRequest) {
   const supabase = await createClient();
@@ -49,13 +51,13 @@ export async function GET(req: NextRequest) {
 
   let q = supabase
     .from('leads')
-    .select('email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, scrub_score')
+    .select('id, email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, quality_score, verification_status, source_tier')
     .eq('client_id', client.id)
-    .eq('is_scrubbed', true)
-    .order('lead_quality_score', { ascending: false, nullsFirst: false })
+    .eq('export_eligibility', 'eligible')
+    .order('quality_score', { ascending: false, nullsFirst: false })
     .limit(rowLimit);
   if (segment) q = q.eq('icp_segment', segment);
-  if (minScore) q = q.gte('scrub_score', minScore);
+  if (minScore) q = q.gte('quality_score', minScore);
 
   const { data: leads, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -70,6 +72,16 @@ export async function GET(req: NextRequest) {
     created_by: user.id,
   });
 
+  // Mark the batch as exported so a follow-up export doesn't double-serve
+  // the same audience. A scheduled re-verification job can return rows to
+  // 'eligible' after a freshness re-check.
+  if (rows.length) {
+    await supabase
+      .from('leads')
+      .update({ export_eligibility: 'exported' })
+      .in('id', rows.map((r) => r.id));
+  }
+
   if (format === 'smartly') {
     const hashed = await Promise.all(
       rows.map(async (r) => ({ email_sha256: await sha256(r.email ?? '') }))
@@ -77,7 +89,13 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ account_id: process.env.SMARTLY_ACCOUNT_ID, audience: hashed });
   }
 
-  const csv = Papa.unparse(rows);
+  // Strip internal ids before handing off CSV to the client.
+  const csvRows = rows.map((r) => {
+    const { id: _id, ...rest } = r;
+    void _id;
+    return rest;
+  });
+  const csv = Papa.unparse(csvRows);
   return new NextResponse(csv, {
     headers: {
       'Content-Type': 'text/csv',

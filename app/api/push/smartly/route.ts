@@ -54,13 +54,13 @@ export async function POST(req: NextRequest) {
     .from('clients').select('id').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
-  // Build the query
+  // Build the query — only export-eligible rows leave via smartly.
   let q = supabase
     .from('leads')
-    .select('email, phone_e164, first_name, last_name, city, region, country, scrub_score')
+    .select('id, email, phone_e164, first_name, last_name, city, region, country, quality_score')
     .eq('client_id', client.id)
-    .eq('is_scrubbed', true)
-    .gte('scrub_score', min_score);
+    .eq('export_eligibility', 'eligible')
+    .gte('quality_score', min_score);
   if (segment) q = q.eq('icp_segment', segment);
 
   const { data: leads, error: qErr } = await q;
@@ -127,6 +127,12 @@ export async function POST(req: NextRequest) {
     filters: { segment, min_score, audience_name, audience_id: returnedId },
     row_count: users.length,
   });
+
+  // Flip exported rows out of 'eligible' so we don't re-push the same audience.
+  await supabase
+    .from('leads')
+    .update({ export_eligibility: 'exported' })
+    .in('id', leads.map((l) => l.id));
 
   return NextResponse.json({
     pushed: users.length,
