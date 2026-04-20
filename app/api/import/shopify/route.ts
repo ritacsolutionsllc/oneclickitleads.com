@@ -3,6 +3,8 @@ import { createAdminClient } from '@/utils/supabase/server';
 import Papa from 'papaparse';
 import { normalizeEmail } from '@/utils/scrub/email';
 import { normalizePhone } from '@/utils/scrub/phone';
+import { scoreLead } from '@/utils/scoring/score';
+import { assignTier } from '@/utils/scoring/tier';
 
 /**
  * POST /api/import/shopify
@@ -47,6 +49,7 @@ export async function POST(req: NextRequest) {
       kind: 'firstparty',
       label: `shopify import ${file.name} (${mode})`,
       source_url: 'shopify:customers.csv',
+      trust_tier: 1,
     })
     .select('id').single();
 
@@ -59,32 +62,76 @@ export async function POST(req: NextRequest) {
     reason: 'existing_customer',
   }));
 
-  const seedRows = rows.map((r) => ({
-    client_id: client.id,
-    source_id: src?.id,
-    first_name: r['First Name'] || null,
-    last_name: r['Last Name'] || null,
-    email: normalizeEmail(r['Email']),
-    phone_e164: r['Phone'] ? normalizePhone(r['Phone']) : null,
-    city: r['City'] || null,
-    region: r['Province'] || null,
-    country: r['Country'] || null,
-    icp_segment: 'b2c_beauty',
-    tags: [
-      'shopify',
-      'existing_customer',
-      ...(Number(r['Total Orders'] ?? 0) >= 2 ? ['repeat_buyer'] : []),
-      ...((r['Accepts Email Marketing'] ?? '').toLowerCase() === 'yes' ? ['opted_in'] : []),
-    ],
-    // Treat as scrubbed: it's first-party, already-validated purchase data.
-    is_scrubbed: true,
-    syntax_valid: true,
-    mx_valid: true,
-    smtp_valid: true,
-    scrub_score: 100,
-    raw: r,
-    scrubbed_at: new Date().toISOString(),
-  }));
+  const now = new Date().toISOString();
+  const seedRows = rows.map((r) => {
+    const email = normalizeEmail(r['Email']);
+    const phone_e164 = r['Phone'] ? normalizePhone(r['Phone']) : null;
+    const first_name = r['First Name'] || null;
+    const last_name = r['Last Name'] || null;
+    const city = r['City'] || null;
+    const region = r['Province'] || null;
+    const country = r['Country'] || null;
+    // Shopify customers are first-party (trust tier 1): real paying buyers.
+    // Score directly rather than re-running the scrub pipeline (which would
+    // waste NeverBounce credits on already-validated emails).
+    const scores = scoreLead({
+      syntax_valid: true,
+      mx_valid: true,
+      smtp_valid: true,
+      is_disposable: false,
+      is_duplicate: false,
+      is_suppressed: false,
+      email,
+      phone_e164,
+      first_name,
+      last_name,
+      city,
+      region,
+      country,
+      icp_segment: 'b2c_beauty',
+      source_trust_tier: 1,
+      verified_at: null,
+    });
+    const export_tier = assignTier({
+      composite_score: scores.composite_score,
+      is_scrubbed: true,
+    });
+    return {
+      client_id: client.id,
+      source_id: src?.id,
+      first_name,
+      last_name,
+      email,
+      phone_e164,
+      city,
+      region,
+      country,
+      icp_segment: 'b2c_beauty',
+      tags: [
+        'shopify',
+        'existing_customer',
+        ...(Number(r['Total Orders'] ?? 0) >= 2 ? ['repeat_buyer'] : []),
+        ...((r['Accepts Email Marketing'] ?? '').toLowerCase() === 'yes' ? ['opted_in'] : []),
+      ],
+      // Treat as scrubbed: it's first-party, already-validated purchase data.
+      is_scrubbed: true,
+      syntax_valid: true,
+      mx_valid: true,
+      smtp_valid: true,
+      scrub_score: 100,
+      identity_score: scores.identity_score,
+      icp_fit_score: scores.icp_fit_score,
+      completeness_score: scores.completeness_score,
+      freshness_score: scores.freshness_score,
+      intent_score: scores.intent_score,
+      source_confidence: scores.source_confidence,
+      export_tier,
+      verified_at: now,
+      verified_by: 'shopify-import',
+      raw: r,
+      scrubbed_at: now,
+    };
+  });
 
   let suppressed = 0;
   let seeded = 0;

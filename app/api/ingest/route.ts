@@ -22,6 +22,15 @@ export async function POST(req: NextRequest) {
   if (!client_slug || !Array.isArray(rows)) {
     return NextResponse.json({ error: 'bad request' }, { status: 400 });
   }
+  // Bound the batch so a single request can't exhaust memory/timeout.
+  // Callers with more data should paginate; 50k already takes ~5min.
+  const MAX_ROWS = 50_000;
+  if (rows.length > MAX_ROWS) {
+    return NextResponse.json(
+      { error: `too many rows: ${rows.length} (max ${MAX_ROWS} per request)` },
+      { status: 413 }
+    );
+  }
 
   const supabase = createAdminClient();
 

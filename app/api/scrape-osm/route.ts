@@ -14,16 +14,46 @@ import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
  * Useful `shop` values for Chella's ICP: beauty, hairdresser, cosmetics.
  * Also accepts amenity/craft via ?type=amenity&kind=clinic etc.
  */
+const ALLOWED_SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as const;
+const ALLOWED_OSM_KEYS = ['shop', 'amenity', 'craft'] as const;
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const clientSlug = searchParams.get('client') || 'chella';
   const segment = searchParams.get('segment') || 'salon';
+  if (!(ALLOWED_SEGMENTS as readonly string[]).includes(segment)) {
+    return NextResponse.json(
+      { error: `segment must be one of ${ALLOWED_SEGMENTS.join(', ')}` },
+      { status: 400 }
+    );
+  }
   const shop = searchParams.get('shop') || 'beauty';
   const city = searchParams.get('city') || 'Los Angeles';
   const region = searchParams.get('region') || 'CA';
   const country = searchParams.get('country') || 'US';
   // 'shop', 'amenity', or 'craft' — the three OSM keys businesses live under.
-  const osmKey = (searchParams.get('type') || 'shop') as 'shop' | 'amenity' | 'craft';
+  const osmKeyParam = searchParams.get('type') || 'shop';
+  if (!(ALLOWED_OSM_KEYS as readonly string[]).includes(osmKeyParam)) {
+    return NextResponse.json(
+      { error: `type must be one of ${ALLOWED_OSM_KEYS.join(', ')}` },
+      { status: 400 }
+    );
+  }
+  const osmKey = osmKeyParam as 'shop' | 'amenity' | 'craft';
+  // shop/city/region/country are injected into a raw Overpass QL string, so
+  // reject anything that could escape the quoted value — only common business
+  // tag characters are allowed.
+  const SAFE_TAG = /^[A-Za-z0-9 ,.'&/_-]{1,80}$/;
+  for (const [name, value] of [
+    ['shop', shop], ['city', city], ['region', region], ['country', country],
+  ] as const) {
+    if (!SAFE_TAG.test(value)) {
+      return NextResponse.json(
+        { error: `${name} contains disallowed characters` },
+        { status: 400 }
+      );
+    }
+  }
 
   const areaQuery = `area["name"="${city}"]["admin_level"~"6|7|8"]->.a;`;
   const query = `
