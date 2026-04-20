@@ -3,6 +3,9 @@ import { createAdminClient } from '@/utils/supabase/server';
 import Papa from 'papaparse';
 import { normalizeEmail } from '@/utils/scrub/email';
 import { normalizePhone } from '@/utils/scrub/phone';
+import { qualityColumns, scoreLead } from '@/utils/quality/score';
+import { tierForSourceKind } from '@/utils/quality/source-tier';
+import type { ScrubbedLead } from '@/utils/scrub/pipeline';
 
 /**
  * POST /api/import/shopify
@@ -40,11 +43,15 @@ export async function POST(req: NextRequest) {
     .from('clients').select('id').eq('slug', clientSlug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
+  const sourceKind = 'shopify';
+  const sourceTier = tierForSourceKind(sourceKind);
+
   const { data: src } = await supabase
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: 'firstparty',
+      kind: sourceKind,
+      tier: sourceTier,
       label: `shopify import ${file.name} (${mode})`,
       source_url: 'shopify:customers.csv',
     })
@@ -59,32 +66,65 @@ export async function POST(req: NextRequest) {
     reason: 'existing_customer',
   }));
 
-  const seedRows = rows.map((r) => ({
-    client_id: client.id,
-    source_id: src?.id,
-    first_name: r['First Name'] || null,
-    last_name: r['Last Name'] || null,
-    email: normalizeEmail(r['Email']),
-    phone_e164: r['Phone'] ? normalizePhone(r['Phone']) : null,
-    city: r['City'] || null,
-    region: r['Province'] || null,
-    country: r['Country'] || null,
-    icp_segment: 'b2c_beauty',
-    tags: [
-      'shopify',
-      'existing_customer',
-      ...(Number(r['Total Orders'] ?? 0) >= 2 ? ['repeat_buyer'] : []),
-      ...((r['Accepts Email Marketing'] ?? '').toLowerCase() === 'yes' ? ['opted_in'] : []),
-    ],
-    // Treat as scrubbed: it's first-party, already-validated purchase data.
-    is_scrubbed: true,
-    syntax_valid: true,
-    mx_valid: true,
-    smtp_valid: true,
-    scrub_score: 100,
-    raw: r,
-    scrubbed_at: new Date().toISOString(),
-  }));
+  const seedRows = rows.map((r) => {
+    const normalizedEmail = normalizeEmail(r['Email']);
+    const phoneE164 = r['Phone'] ? normalizePhone(r['Phone']) : null;
+    // Score as a synthetic ScrubbedLead — first-party flag tells the engine
+    // the deliverability status is implied by purchase history.
+    const synthetic: ScrubbedLead = {
+      first_name: r['First Name'] || undefined,
+      last_name: r['Last Name'] || undefined,
+      email: normalizedEmail,
+      phone: phoneE164 ?? undefined,
+      city: r['City'] || undefined,
+      region: r['Province'] || undefined,
+      country: r['Country'] || undefined,
+      icp_segment: 'b2c_beauty',
+      normalized_email: normalizedEmail,
+      phone_e164: phoneE164,
+      syntax_valid: true,
+      mx_valid: true,
+      smtp_valid: true,
+      is_disposable: false,
+      is_duplicate: false,
+      is_suppressed: false,
+      scrub_score: 100,
+      is_scrubbed: true,
+      // populated below
+      quality: undefined as never,
+    };
+    const quality = scoreLead({
+      scrubbed: synthetic,
+      sourceTier,
+      signals: { first_party: true, verified_at: new Date().toISOString() },
+    });
+    return {
+      client_id: client.id,
+      source_id: src?.id,
+      first_name: r['First Name'] || null,
+      last_name: r['Last Name'] || null,
+      email: normalizedEmail,
+      phone_e164: phoneE164,
+      city: r['City'] || null,
+      region: r['Province'] || null,
+      country: r['Country'] || null,
+      icp_segment: 'b2c_beauty',
+      tags: [
+        'shopify',
+        'existing_customer',
+        ...(Number(r['Total Orders'] ?? 0) >= 2 ? ['repeat_buyer'] : []),
+        ...((r['Accepts Email Marketing'] ?? '').toLowerCase() === 'yes' ? ['opted_in'] : []),
+      ],
+      is_scrubbed: true,
+      syntax_valid: true,
+      mx_valid: true,
+      smtp_valid: true,
+      scrub_score: 100,
+      raw: r,
+      scrubbed_at: new Date().toISOString(),
+      ...qualityColumns(quality),
+    };
+  });
 
   let suppressed = 0;
   let seeded = 0;

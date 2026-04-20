@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { qualityColumns } from '@/utils/quality/score';
+import { tierForSourceKind } from '@/utils/quality/source-tier';
 
 /**
  * POST /api/scrape-webscrapingai
@@ -80,11 +82,15 @@ export async function POST(req: NextRequest) {
     .single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
+  const sourceKind = 'webscraping.ai';
+  const sourceTier = tierForSourceKind(sourceKind);
+
   const { data: src } = await supabase
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: 'scraped',
+      kind: sourceKind,
+      tier: sourceTier,
       label: `webscraping.ai: ${urls.length} url${urls.length > 1 ? 's' : ''}${segment ? ` (${segment})` : ''}`,
       source_url: 'https://api.webscraping.ai/html',
     })
@@ -128,7 +134,9 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    source: { kind: sourceKind, tier: sourceTier },
+  });
   const toInsert = scrubbed.map((s) => ({
     client_id: client.id,
     source_id: src?.id,
@@ -150,6 +158,7 @@ export async function POST(req: NextRequest) {
     reject_reason: s.reject_reason,
     raw: s,
     scrubbed_at: new Date().toISOString(),
+    ...qualityColumns(s.quality),
   }));
   const { error } = await supabase.from('leads').insert(toInsert);
 
@@ -160,6 +169,9 @@ export async function POST(req: NextRequest) {
     with_phone: rows.filter((r) => r.phone).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    eligible: toInsert.filter((r) => r.export_eligibility === 'eligible').length,
+    review: toInsert.filter((r) => r.export_eligibility === 'review').length,
+    quarantined: toInsert.filter((r) => r.export_eligibility === 'quarantined').length,
     errors,
     error: error?.message,
   });

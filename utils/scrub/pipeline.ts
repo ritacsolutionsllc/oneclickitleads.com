@@ -1,11 +1,20 @@
-// The full scrubbing pipeline. Composes email check + phone + enrichment + dedupe + suppression.
+// The full scrubbing pipeline. Composes email check + phone + enrichment + dedupe + suppression
+// + canonical quality scoring (utils/quality/score.ts).
 //
 // Usage (from an API route or edge function):
-//   const clean = await scrubBatch(supabase, clientId, rawRows);
+//   const clean = await scrubBatch(supabase, clientId, rawRows, {
+//     source: { kind: 'google_places' },
+//   });
+//
+// Every returned row carries a `quality` field. Ingestion routes spread
+// `qualityColumns(row.quality)` onto their insert payload so the export
+// gate has the eligibility decision available without re-running scoring.
 
 import { scrubEmail, normalizeEmail } from './email';
 import { normalizePhone } from './phone';
 import { enrich } from './enrich';
+import { scoreLead, type QualityResult, type QualitySignals } from '@/utils/quality/score';
+import { tierForSourceKind, type SourceTier } from '@/utils/quality/source-tier';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface RawLead {
@@ -36,13 +45,33 @@ export interface ScrubbedLead extends RawLead {
   scrub_score: number;
   reject_reason?: string;
   is_scrubbed: boolean;
+  /** Quality decision from utils/quality/score.ts. Always present. */
+  quality: QualityResult;
+}
+
+export interface ScrubBatchOptions {
+  doEnrich?: boolean;
+  /**
+   * Source metadata used by the scoring engine. Either pass `tier` directly
+   * or pass `kind` (the same value written to `sources.kind`) and the engine
+   * will derive the tier via `tierForSourceKind`.
+   */
+  source?: {
+    kind?: string | null;
+    tier?: SourceTier;
+  };
+  /**
+   * Per-row quality signals (rating data, prior verification timestamps,
+   * first-party override). Index-aligned with `rows`.
+   */
+  signals?: (QualitySignals | undefined)[];
 }
 
 export async function scrubBatch(
   supabase: SupabaseClient,
   clientId: string,
   rows: RawLead[],
-  opts: { doEnrich?: boolean } = { doEnrich: true }
+  opts: ScrubBatchOptions = { doEnrich: true }
 ): Promise<ScrubbedLead[]> {
   // 1. pull suppressions once
   const { data: sup } = await supabase
@@ -72,8 +101,11 @@ export async function scrubBatch(
   const results: ScrubbedLead[] = [];
   const seenEmails = new Set<string>();
   const seenPhones = new Set<string>();
+  const sourceTier =
+    opts.source?.tier ?? tierForSourceKind(opts.source?.kind);
 
-  for (const row of rows) {
+  for (let idx = 0; idx < rows.length; idx++) {
+    const row = rows[idx];
     const emailRaw = row.email ?? '';
     const emailResult = emailRaw ? await scrubEmail(emailRaw) : null;
     const normalized = emailResult?.normalized ?? normalizeEmail(emailRaw);
@@ -111,7 +143,7 @@ export async function scrubBatch(
       !isDuplicate &&
       !isSuppressed;
 
-    results.push({
+    const scrubbed: ScrubbedLead = {
       ...row,
       ...enrichedFields,
       normalized_email: normalized,
@@ -127,7 +159,17 @@ export async function scrubBatch(
         emailResult?.reject_reason ??
         (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined),
       is_scrubbed: isScrubbed,
+      // placeholder; replaced below after scoring runs
+      quality: undefined as unknown as QualityResult,
+    };
+
+    scrubbed.quality = scoreLead({
+      scrubbed,
+      sourceTier,
+      signals: opts.signals?.[idx],
     });
+
+    results.push(scrubbed);
   }
 
   return results;

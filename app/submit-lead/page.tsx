@@ -1,5 +1,9 @@
-import { createClient } from '@/utils/supabase/server';
+import { createClient, createAdminClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import { scrubEmail } from '@/utils/scrub/email';
+import { normalizePhone } from '@/utils/scrub/phone';
+import { qualityColumns, scoreLead } from '@/utils/quality/score';
+import type { ScrubbedLead } from '@/utils/scrub/pipeline';
 
 type SearchParams = { client?: string; error?: string; ok?: string };
 
@@ -52,14 +56,78 @@ export default async function SubmitLead({
         );
       }
 
-      const { error: insertErr } = await supabase.from('leads').insert({
-        client_id: client!.id,
+      // Public form opt-in: an anonymous user is supplying their own
+      // contact info, so this is first-party data with explicit consent.
+      // We still run the email through the scrub ladder — a typo'd
+      // address must not leak past the export gate just because a human
+      // typed it. The admin client writes the source row + score so the
+      // public-facing supabase session never gains write access to
+      // sources/leads beyond the existing RLS policy.
+      const emailResult = await scrubEmail(email);
+      const phoneE164 = phone ? normalizePhone(phone) : null;
+      const synthetic: ScrubbedLead = {
+        first_name,
+        last_name: last_name || undefined,
         email,
+        phone: phoneE164 ?? undefined,
+        icp_segment,
+        normalized_email: emailResult.normalized,
+        phone_e164: phoneE164,
+        syntax_valid: emailResult.syntax_valid,
+        mx_valid: emailResult.mx_valid,
+        smtp_valid: emailResult.smtp_valid,
+        is_disposable: emailResult.is_disposable,
+        is_duplicate: false,
+        is_suppressed: false,
+        scrub_score: emailResult.score,
+        reject_reason: emailResult.reject_reason,
+        is_scrubbed:
+          emailResult.syntax_valid &&
+          emailResult.mx_valid &&
+          !emailResult.is_disposable,
+        quality: undefined as never,
+      };
+      const quality = scoreLead({
+        scrubbed: synthetic,
+        sourceTier: 'first_party',
+        signals: { first_party: true, verified_at: new Date().toISOString() },
+      });
+
+      // sources/leads writes go through the admin client because the
+      // public form runs without an authenticated supabase session and
+      // RLS policies on those tables key off `auth.uid()`.
+      const admin = createAdminClient();
+
+      const { data: src } = await admin
+        .from('sources')
+        .insert({
+          client_id: client!.id,
+          kind: 'first_party',
+          tier: 'first_party',
+          label: `submit-lead opt-in (${icp_segment})`,
+          source_url: '/submit-lead',
+        })
+        .select('id')
+        .single();
+
+      const { error: insertErr } = await admin.from('leads').insert({
+        client_id: client!.id,
+        source_id: src?.id ?? null,
+        email: emailResult.normalized,
         first_name,
         last_name: last_name || null,
-        phone_e164: phone || null,
+        phone_e164: phoneE164,
         icp_segment,
+        syntax_valid: emailResult.syntax_valid,
+        mx_valid: emailResult.mx_valid,
+        smtp_valid: emailResult.smtp_valid,
+        is_disposable: emailResult.is_disposable,
+        scrub_score: emailResult.score,
+        reject_reason: emailResult.reject_reason ?? null,
+        is_scrubbed: synthetic.is_scrubbed,
+        scrubbed_at: new Date().toISOString(),
         raw: Object.fromEntries(formData.entries()),
+        ...qualityColumns(quality),
       });
 
       if (insertErr) {

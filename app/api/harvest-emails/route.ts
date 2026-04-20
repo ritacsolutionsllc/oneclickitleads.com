@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scrubEmail } from '@/utils/scrub/email';
+import { qualityColumns, scoreLead } from '@/utils/quality/score';
+import type { ScrubbedLead } from '@/utils/scrub/pipeline';
+import type { SourceTier } from '@/utils/quality/source-tier';
 
 /**
  * POST /api/harvest-emails
@@ -40,10 +44,12 @@ export async function POST(req: NextRequest) {
     .from('clients').select('id').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
-  // Leads with a website (in raw->source_url) but no email yet.
+  // Leads with a website (in raw->source_url) but no email yet. We pull
+  // enough fields to re-score post-harvest so eligibility can change as
+  // soon as we acquire a verifiable email.
   let q = supabase
     .from('leads')
-    .select('id, company, city, region, raw')
+    .select('id, company, city, region, country, first_name, last_name, phone_e164, title, icp_segment, source_tier, raw')
     .eq('client_id', client.id)
     .is('email', null)
     .not('raw->>source_url', 'is', null)
@@ -66,17 +72,59 @@ export async function POST(req: NextRequest) {
       if (!site) continue;
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
-      if (hit.email) {
-        await supabase
-          .from('leads')
-          .update({
-            email: hit.email,
-            syntax_valid: true,
-            reject_reason: null,
-            raw: { ...(lead.raw as object), harvested_from: hit.found_on },
-          })
-          .eq('id', lead.id);
-      }
+      if (!hit.email) continue;
+
+      // Re-score the lead now that we have a real email. Run the email
+      // through the same syntax/MX/SMTP ladder the ingest path uses so
+      // a harvested address can never bypass verification.
+      const emailResult = await scrubEmail(hit.email);
+      const synthetic: ScrubbedLead = {
+        first_name: lead.first_name ?? undefined,
+        last_name: lead.last_name ?? undefined,
+        email: hit.email,
+        phone: lead.phone_e164 ?? undefined,
+        company: lead.company ?? undefined,
+        title: lead.title ?? undefined,
+        city: lead.city ?? undefined,
+        region: lead.region ?? undefined,
+        country: lead.country ?? undefined,
+        icp_segment: lead.icp_segment ?? undefined,
+        normalized_email: emailResult.normalized,
+        phone_e164: lead.phone_e164 ?? null,
+        syntax_valid: emailResult.syntax_valid,
+        mx_valid: emailResult.mx_valid,
+        smtp_valid: emailResult.smtp_valid,
+        is_disposable: emailResult.is_disposable,
+        is_duplicate: false,
+        is_suppressed: false,
+        scrub_score: emailResult.score,
+        reject_reason: emailResult.reject_reason,
+        is_scrubbed:
+          emailResult.syntax_valid &&
+          emailResult.mx_valid &&
+          !emailResult.is_disposable,
+        quality: undefined as never,
+      };
+      const quality = scoreLead({
+        scrubbed: synthetic,
+        sourceTier: (lead.source_tier as SourceTier | null) ?? 'scraped',
+      });
+
+      await supabase
+        .from('leads')
+        .update({
+          email: emailResult.normalized,
+          syntax_valid: emailResult.syntax_valid,
+          mx_valid: emailResult.mx_valid,
+          smtp_valid: emailResult.smtp_valid,
+          is_disposable: emailResult.is_disposable,
+          scrub_score: emailResult.score,
+          reject_reason: emailResult.reject_reason ?? null,
+          is_scrubbed: synthetic.is_scrubbed,
+          raw: { ...(lead.raw as object), harvested_from: hit.found_on },
+          ...qualityColumns(quality),
+        })
+        .eq('id', lead.id);
     }
   }
   await Promise.all(Array.from({ length: pool }, worker));

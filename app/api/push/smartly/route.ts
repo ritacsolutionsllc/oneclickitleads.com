@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { enforceExport, minQualityForTier } from '@/utils/plans/enforce';
 
 /**
  * POST /api/push/smartly
@@ -51,22 +52,51 @@ export async function POST(req: NextRequest) {
 
   const supabase = createAdminClient();
   const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', client_slug).single();
+    .from('clients').select('id, plan').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
-  // Build the query
+  const cap = await enforceExport(client.id);
+  if (!cap.ok) {
+    return NextResponse.json(
+      {
+        error: 'Monthly plan cap reached',
+        detail: `Used ${cap.used} / ${cap.cap} eligible leads on the ${cap.plan} plan this month.`,
+      },
+      { status: 402 },
+    );
+  }
+
+  const tierFloor = minQualityForTier(client.plan);
+  const effectiveMinQuality = Math.max(tierFloor, Number(min_score) || 0);
+
+  // Only push leads the scoring engine flagged as eligible. The legacy
+  // is_scrubbed + scrub_score gate stays out of the path; eligibility is
+  // the canonical decision and already reflects suppressions/duplicates/
+  // verification status.
   let q = supabase
     .from('leads')
-    .select('email, phone_e164, first_name, last_name, city, region, country, scrub_score')
+    .select('email, phone_e164, first_name, last_name, city, region, country, scrub_score, quality_score, verification_status')
     .eq('client_id', client.id)
-    .eq('is_scrubbed', true)
-    .gte('scrub_score', min_score);
+    .eq('export_eligibility', 'eligible')
+    .gte('quality_score', effectiveMinQuality)
+    .order('quality_score', { ascending: false, nullsFirst: false });
   if (segment) q = q.eq('icp_segment', segment);
 
   const { data: leads, error: qErr } = await q;
   if (qErr) return NextResponse.json({ error: qErr.message }, { status: 500 });
   if (!leads?.length)
-    return NextResponse.json({ error: 'no leads match filters', filters: { segment, min_score } }, { status: 400 });
+    return NextResponse.json(
+      {
+        error: 'no eligible leads match filters',
+        filters: {
+          segment,
+          min_score,
+          tier_floor: tierFloor,
+          effective_min_quality: effectiveMinQuality,
+        },
+      },
+      { status: 400 },
+    );
 
   // Hash for Custom Audience upload
   const users = await Promise.all(
@@ -124,7 +154,15 @@ export async function POST(req: NextRequest) {
   await supabase.from('exports').insert({
     client_id: client.id,
     destination: 'smartly',
-    filters: { segment, min_score, audience_name, audience_id: returnedId },
+    filters: {
+      segment,
+      min_score,
+      tier_floor: tierFloor,
+      effective_min_quality: effectiveMinQuality,
+      gate: 'export_eligibility=eligible',
+      audience_name,
+      audience_id: returnedId,
+    },
     row_count: users.length,
   });
 

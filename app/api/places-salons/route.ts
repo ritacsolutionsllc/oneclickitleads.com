@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { qualityColumns } from '@/utils/quality/score';
+import { tierForSourceKind } from '@/utils/quality/source-tier';
 
 /**
  * GET /api/places-salons?query=eyebrow+salon+Los+Angeles+CA&client=chella&segment=salon
@@ -101,19 +103,35 @@ export async function GET(request: Request) {
     .from('clients').select('id').eq('slug', clientSlug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
+  // Google Places is a verified directory — public, but signed off by
+  // Google with rating + review-count signals. Quality engine treats it
+  // higher than freeform scraping but still requires SMTP verification
+  // (or a strong directory boost) to clear the export gate.
+  const sourceKind = 'google_places';
+  const sourceTier = tierForSourceKind(sourceKind);
+
   const { data: src } = await supabase
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: 'scraped',
+      kind: sourceKind,
+      tier: sourceTier,
       label: `google_places: ${query}`,
       source_url: 'https://places.googleapis.com/v1/places:searchText',
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const signals = rows.map((r) => ({
+    rating: r.raw_rating ?? null,
+    rating_count: r.raw_rating_count ?? null,
+  }));
 
-  const toInsert = scrubbed.map((s) => ({
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    source: { kind: sourceKind, tier: sourceTier },
+    signals,
+  });
+
+  const toInsert = scrubbed.map((s, idx) => ({
     client_id: client.id,
     source_id: src?.id,
     company: s.company,
@@ -125,6 +143,9 @@ export async function GET(request: Request) {
     region: s.region,
     country: s.country,
     tags: s.tags ?? [],
+    rating: rows[idx]?.raw_rating ?? null,
+    rating_count: rows[idx]?.raw_rating_count ?? null,
+    website: rows[idx]?.source_url ?? null,
     is_scrubbed: s.is_scrubbed,
     is_duplicate: s.is_duplicate,
     syntax_valid: s.syntax_valid,
@@ -134,6 +155,7 @@ export async function GET(request: Request) {
     reject_reason: s.reject_reason,
     raw: s,
     scrubbed_at: new Date().toISOString(),
+    ...qualityColumns(s.quality),
   }));
 
   const { error } = await supabase.from('leads').insert(toInsert);
@@ -145,6 +167,9 @@ export async function GET(request: Request) {
     with_website: rows.filter((r) => r.source_url).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    eligible: toInsert.filter((r) => r.export_eligibility === 'eligible').length,
+    review: toInsert.filter((r) => r.export_eligibility === 'review').length,
+    quarantined: toInsert.filter((r) => r.export_eligibility === 'quarantined').length,
     error: error?.message,
   });
 }

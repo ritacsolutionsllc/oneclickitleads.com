@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import Papa from 'papaparse';
-import { enforceExport, maxRowsForExport } from '@/utils/plans/enforce';
+import {
+  enforceExport,
+  maxRowsForExport,
+  minQualityForTier,
+} from '@/utils/plans/enforce';
 import { planByTier } from '@/lib/plans';
 
 /**
@@ -46,16 +50,20 @@ export async function GET(req: NextRequest) {
 
   const plan = planByTier(client.plan);
   const rowLimit = maxRowsForExport(plan, cap.remaining ?? 10_000);
+  const tierFloor = minQualityForTier(plan.tier);
+  // The caller may *raise* the bar but never lower it below the tier floor.
+  const effectiveMinQuality = Math.max(tierFloor, minScore || 0);
 
   let q = supabase
     .from('leads')
-    .select('email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, scrub_score')
+    .select('email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, scrub_score, quality_score, verification_status, source_tier, reason_codes')
     .eq('client_id', client.id)
-    .eq('is_scrubbed', true)
+    .eq('export_eligibility', 'eligible')
+    .gte('quality_score', effectiveMinQuality)
+    .order('quality_score', { ascending: false, nullsFirst: false })
     .order('lead_quality_score', { ascending: false, nullsFirst: false })
     .limit(rowLimit);
   if (segment) q = q.eq('icp_segment', segment);
-  if (minScore) q = q.gte('scrub_score', minScore);
 
   const { data: leads, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -66,7 +74,13 @@ export async function GET(req: NextRequest) {
     client_id: client.id,
     destination: format === 'smartly' ? 'smartly' : 'csv',
     row_count: rows.length,
-    filters: { segment, min_score: minScore || undefined },
+    filters: {
+      segment,
+      min_score: minScore || undefined,
+      tier_floor: tierFloor,
+      effective_min_quality: effectiveMinQuality,
+      gate: 'export_eligibility=eligible',
+    },
     created_by: user.id,
   });
 
