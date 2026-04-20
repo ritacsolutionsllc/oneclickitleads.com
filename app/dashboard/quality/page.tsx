@@ -96,7 +96,8 @@ export default async function QualityPage({ searchParams }: SP) {
           {TIERS.map((t) => {
             const n = counts[t.key];
             const pct = tieredTotal ? Math.round((n / tieredTotal) * 100) : 0;
-            const leadsHref = `/dashboard/leads?client=${active.slug}`;
+            const leadsHref = `/dashboard/leads?client=${active.slug}&tier=${t.key}`;
+            const exportHref = `/api/export?client=${active.slug}&format=csv&tier=${t.key}`;
             return (
               <div key={t.key}>
                 <div className="flex items-baseline justify-between text-sm">
@@ -115,9 +116,16 @@ export default async function QualityPage({ searchParams }: SP) {
                 <div className="mt-1 flex items-baseline justify-between text-xs text-neutral-500">
                   <span>{t.description}</span>
                   {n > 0 && (
-                    <Link href={leadsHref} className="text-emerald-700 hover:underline">
-                      browse →
-                    </Link>
+                    <div className="flex gap-3">
+                      <Link href={leadsHref} className="text-emerald-700 hover:underline">
+                        browse →
+                      </Link>
+                      {(t.key === 'premium' || t.key === 'standard' || t.key === 'prospecting') && (
+                        <Link href={exportHref} className="text-sky-700 hover:underline">
+                          export CSV →
+                        </Link>
+                      )}
+                    </div>
                   )}
                 </div>
               </div>

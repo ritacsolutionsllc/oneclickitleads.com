@@ -7,6 +7,7 @@ type SP = {
     client?: string;
     segment?: string;
     scrubbed?: string;
+    tier?: string;
     page?: string;
     q?: string;
     minScore?: string;
@@ -14,6 +15,8 @@ type SP = {
 };
 
 const PAGE_SIZE = 50;
+
+const VALID_TIERS = ['premium', 'standard', 'prospecting', 'review', 'hold', 'discard'] as const;
 
 export default async function LeadsPage({ searchParams }: SP) {
   const sp = await searchParams;
@@ -30,6 +33,9 @@ export default async function LeadsPage({ searchParams }: SP) {
   const from = (page - 1) * PAGE_SIZE;
   const to = from + PAGE_SIZE - 1;
 
+  // Validate tier param to prevent arbitrary DB values
+  const tierFilter = sp.tier && (VALID_TIERS as readonly string[]).includes(sp.tier) ? sp.tier : null;
+
   let q = supabase
     .from('leads')
     .select(
@@ -41,6 +47,7 @@ export default async function LeadsPage({ searchParams }: SP) {
   if (sp.segment) q = q.eq('icp_segment', sp.segment);
   if (sp.scrubbed === '1') q = q.eq('is_scrubbed', true);
   if (sp.scrubbed === '0') q = q.eq('is_scrubbed', false);
+  if (tierFilter) q = q.eq('export_tier', tierFilter);
   if (sp.minScore) q = q.gte('composite_score', Number(sp.minScore));
   if (sp.q) {
     const term = sp.q;
@@ -60,6 +67,7 @@ export default async function LeadsPage({ searchParams }: SP) {
   baseParams.set('client', active.slug);
   if (sp.segment) baseParams.set('segment', sp.segment);
   if (sp.scrubbed) baseParams.set('scrubbed', sp.scrubbed);
+  if (tierFilter) baseParams.set('tier', tierFilter);
   if (sp.minScore) baseParams.set('minScore', sp.minScore);
   if (sp.q) baseParams.set('q', sp.q);
   const pageLink = (p: number) => {
@@ -70,16 +78,29 @@ export default async function LeadsPage({ searchParams }: SP) {
 
   const exportLink = `/api/export?client=${active.slug}&format=csv${
     sp.segment ? `&segment=${sp.segment}` : ''
-  }${sp.minScore ? `&min_score=${sp.minScore}` : ''}`;
+  }${tierFilter ? `&tier=${tierFilter}` : ''}${sp.minScore ? `&min_score=${sp.minScore}` : ''}`;
 
   return (
     <div>
-      <div className="flex items-end justify-between">
+      <div className="flex items-end justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-semibold">Leads</h1>
-          <p className="text-sm text-neutral-600">{total.toLocaleString()} total · {active.name}</p>
+          <p className="text-sm text-neutral-600">
+            {total.toLocaleString()} total · {active.name}
+            {tierFilter && (
+              <> · <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${tierBadgeClass(tierFilter)}`}>{tierFilter}</span> tier only</>
+            )}
+          </p>
         </div>
         <div className="flex gap-2">
+          {tierFilter && (
+            <Link
+              href={`/dashboard/leads?client=${active.slug}`}
+              className="rounded-full border border-neutral-300 px-4 py-2 text-sm hover:bg-white"
+            >
+              Clear tier filter
+            </Link>
+          )}
           <Link href={exportLink} className="rounded-full bg-emerald-600 text-white px-4 py-2 text-sm hover:bg-emerald-700">
             Export filtered CSV
           </Link>
@@ -87,7 +108,7 @@ export default async function LeadsPage({ searchParams }: SP) {
       </div>
 
       {/* Filter bar */}
-      <form method="get" className="mt-6 rounded-xl border border-neutral-200 bg-white p-4 grid md:grid-cols-5 gap-3">
+      <form method="get" className="mt-6 rounded-xl border border-neutral-200 bg-white p-4 grid md:grid-cols-6 gap-3">
         <input type="hidden" name="client" value={active.slug} />
         <input
           name="q"
@@ -101,6 +122,15 @@ export default async function LeadsPage({ searchParams }: SP) {
           <option value="salon">salon</option>
           <option value="influencer">influencer</option>
           <option value="retailer">retailer</option>
+        </select>
+        <select name="tier" defaultValue={tierFilter ?? ''} className="rounded-lg border border-neutral-300 px-3 py-2 text-sm">
+          <option value="">All tiers</option>
+          <option value="premium">Premium (≥80)</option>
+          <option value="standard">Standard (65–79)</option>
+          <option value="prospecting">Prospecting (50–64)</option>
+          <option value="review">Review (35–49)</option>
+          <option value="hold">Hold (20–34)</option>
+          <option value="discard">Discard (&lt;20)</option>
         </select>
         <select name="scrubbed" defaultValue={sp.scrubbed ?? ''} className="rounded-lg border border-neutral-300 px-3 py-2 text-sm">
           <option value="">Any status</option>
