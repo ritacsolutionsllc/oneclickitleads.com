@@ -1,12 +1,13 @@
 // The full scrubbing pipeline. Composes email check + phone + enrichment + dedupe + suppression.
 //
 // Usage (from an API route or edge function):
-//   const clean = await scrubBatch(supabase, clientId, rawRows);
+//   const clean = await scrubBatch(supabase, clientId, rawRows, { source_kind: 'places' });
 
 import { scrubEmail, normalizeEmail } from './email';
 import { normalizePhone } from './phone';
 import { enrich } from './enrich';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { scoreLead, type SourceKind, type ScoringResult } from '@/lib/quality/score';
 
 export interface RawLead {
   email?: string;
@@ -21,6 +22,8 @@ export interface RawLead {
   icp_segment?: string;
   source_url?: string;
   tags?: string[];
+  rating?: number;
+  rating_count?: number;
   [k: string]: unknown;
 }
 
@@ -36,14 +39,20 @@ export interface ScrubbedLead extends RawLead {
   scrub_score: number;
   reject_reason?: string;
   is_scrubbed: boolean;
+  // Canonical scoring engine output. Always set — lib/quality/score.ts is
+  // pure and deterministic so every scrubbed row gets a score, reasons,
+  // verification status, source tier, and initial workflow state.
+  quality: ScoringResult;
 }
 
 export async function scrubBatch(
   supabase: SupabaseClient,
   clientId: string,
   rows: RawLead[],
-  opts: { doEnrich?: boolean } = { doEnrich: true }
+  opts: { doEnrich?: boolean; source_kind?: SourceKind } = {}
 ): Promise<ScrubbedLead[]> {
+  const doEnrich = opts.doEnrich ?? true;
+  const sourceKind = opts.source_kind;
   // 1. pull suppressions once
   const { data: sup } = await supabase
     .from('suppressions')
@@ -93,15 +102,15 @@ export async function scrubBatch(
     if (hash) seenEmails.add(hash);
     if (phoneE164) seenPhones.add(phoneE164);
 
-    let enrichedFields = {};
+    let enrichedFields: Partial<RawLead> = {};
     if (
-      opts.doEnrich &&
+      doEnrich &&
       emailResult?.syntax_valid &&
       emailResult?.mx_valid &&
       !isSuppressed &&
       !isDuplicate
     ) {
-      enrichedFields = await enrich(normalized);
+      enrichedFields = (await enrich(normalized)) as Partial<RawLead>;
     }
 
     const isScrubbed =
@@ -111,9 +120,37 @@ export async function scrubBatch(
       !isDuplicate &&
       !isSuppressed;
 
+    const merged = { ...row, ...enrichedFields };
+    const reject_reason =
+      emailResult?.reject_reason ??
+      (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined);
+
+    const quality = scoreLead({
+      email: normalized || null,
+      phone_e164: phoneE164,
+      first_name: merged.first_name ?? null,
+      last_name: merged.last_name ?? null,
+      company: merged.company ?? null,
+      title: merged.title ?? null,
+      city: merged.city ?? null,
+      region: merged.region ?? null,
+      country: merged.country ?? null,
+      icp_segment: merged.icp_segment ?? null,
+      tags: merged.tags ?? null,
+      syntax_valid: !!emailResult?.syntax_valid,
+      mx_valid: !!emailResult?.mx_valid,
+      smtp_valid: !!emailResult?.smtp_valid,
+      is_disposable: !!emailResult?.is_disposable,
+      is_duplicate: isDuplicate,
+      is_suppressed: !!isSuppressed,
+      reject_reason,
+      source_kind: sourceKind ?? null,
+      rating: merged.rating ?? null,
+      rating_count: merged.rating_count ?? null,
+    });
+
     results.push({
-      ...row,
-      ...enrichedFields,
+      ...merged,
       normalized_email: normalized,
       phone_e164: phoneE164,
       syntax_valid: !!emailResult?.syntax_valid,
@@ -123,10 +160,9 @@ export async function scrubBatch(
       is_duplicate: isDuplicate,
       is_suppressed: !!isSuppressed,
       scrub_score: emailResult?.score ?? 0,
-      reject_reason:
-        emailResult?.reject_reason ??
-        (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined),
+      reject_reason,
       is_scrubbed: isScrubbed,
+      quality,
     });
   }
 

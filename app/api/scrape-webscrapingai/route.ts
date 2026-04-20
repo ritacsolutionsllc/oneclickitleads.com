@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { scoringColumns, sourceTierFor } from '@/lib/quality/score';
 
 /**
  * POST /api/scrape-webscrapingai
@@ -84,7 +85,8 @@ export async function POST(req: NextRequest) {
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: 'scraped',
+      kind: 'webscraping',
+      tier: sourceTierFor('webscraping'),
       label: `webscraping.ai: ${urls.length} url${urls.length > 1 ? 's' : ''}${segment ? ` (${segment})` : ''}`,
       source_url: 'https://api.webscraping.ai/html',
     })
@@ -128,7 +130,9 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    source_kind: 'webscraping',
+  });
   const toInsert = scrubbed.map((s) => ({
     client_id: client.id,
     source_id: src?.id,
@@ -150,6 +154,7 @@ export async function POST(req: NextRequest) {
     reject_reason: s.reject_reason,
     raw: s,
     scrubbed_at: new Date().toISOString(),
+    ...scoringColumns(s.quality),
   }));
   const { error } = await supabase.from('leads').insert(toInsert);
 
@@ -160,6 +165,8 @@ export async function POST(req: NextRequest) {
     with_phone: rows.filter((r) => r.phone).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    approved: toInsert.filter((r) => r.lead_status === 'approved').length,
+    in_review: toInsert.filter((r) => r.lead_status === 'review').length,
     errors,
     error: error?.message,
   });

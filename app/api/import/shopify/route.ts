@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import Papa from 'papaparse';
-import { normalizeEmail } from '@/utils/scrub/email';
+import { normalizeEmail, hasValidSyntax } from '@/utils/scrub/email';
 import { normalizePhone } from '@/utils/scrub/phone';
+import { scoreLead, scoringColumns, sourceTierFor } from '@/lib/quality/score';
 
 /**
  * POST /api/import/shopify
@@ -45,6 +46,7 @@ export async function POST(req: NextRequest) {
     .insert({
       client_id: client.id,
       kind: 'firstparty',
+      tier: sourceTierFor('firstparty'),
       label: `shopify import ${file.name} (${mode})`,
       source_url: 'shopify:customers.csv',
     })
@@ -59,32 +61,68 @@ export async function POST(req: NextRequest) {
     reason: 'existing_customer',
   }));
 
-  const seedRows = rows.map((r) => ({
-    client_id: client.id,
-    source_id: src?.id,
-    first_name: r['First Name'] || null,
-    last_name: r['Last Name'] || null,
-    email: normalizeEmail(r['Email']),
-    phone_e164: r['Phone'] ? normalizePhone(r['Phone']) : null,
-    city: r['City'] || null,
-    region: r['Province'] || null,
-    country: r['Country'] || null,
-    icp_segment: 'b2c_beauty',
-    tags: [
+  const seedRows = rows.map((r) => {
+    const email = normalizeEmail(r['Email']);
+    const phone_e164 = r['Phone'] ? normalizePhone(r['Phone']) : null;
+    const first_name = r['First Name'] || null;
+    const last_name = r['Last Name'] || null;
+    const city = r['City'] || null;
+    const region = r['Province'] || null;
+    const country = r['Country'] || null;
+    const tags = [
       'shopify',
       'existing_customer',
       ...(Number(r['Total Orders'] ?? 0) >= 2 ? ['repeat_buyer'] : []),
       ...((r['Accepts Email Marketing'] ?? '').toLowerCase() === 'yes' ? ['opted_in'] : []),
-    ],
-    // Treat as scrubbed: it's first-party, already-validated purchase data.
-    is_scrubbed: true,
-    syntax_valid: true,
-    mx_valid: true,
-    smtp_valid: true,
-    scrub_score: 100,
-    raw: r,
-    scrubbed_at: new Date().toISOString(),
-  }));
+    ];
+    const syntax_valid = hasValidSyntax(email);
+
+    // First-party purchase data: already proven deliverable. scoreLead with
+    // source_kind='firstparty' + smtp_valid=true → 'first_party' verification
+    // and a high composite score that clears the export gate.
+    const quality = scoreLead({
+      email,
+      phone_e164,
+      first_name,
+      last_name,
+      company: null,
+      title: null,
+      city,
+      region,
+      country,
+      icp_segment: 'b2c_beauty',
+      tags,
+      syntax_valid,
+      mx_valid: true,
+      smtp_valid: true,
+      is_disposable: false,
+      is_duplicate: false,
+      is_suppressed: false,
+      source_kind: 'firstparty',
+    });
+
+    return {
+      client_id: client.id,
+      source_id: src?.id,
+      first_name,
+      last_name,
+      email,
+      phone_e164,
+      city,
+      region,
+      country,
+      icp_segment: 'b2c_beauty',
+      tags,
+      is_scrubbed: true,
+      syntax_valid,
+      mx_valid: true,
+      smtp_valid: true,
+      scrub_score: 100,
+      raw: r,
+      scrubbed_at: new Date().toISOString(),
+      ...scoringColumns(quality),
+    };
+  });
 
   let suppressed = 0;
   let seeded = 0;

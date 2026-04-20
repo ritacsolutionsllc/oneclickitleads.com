@@ -11,14 +11,16 @@ export async function enforceExport(clientId: string) {
   const supabase = createAdminClient();
   const { data, error } = await supabase
     .from('v_client_usage')
-    .select('plan, clean_this_month, monthly_cap')
+    .select('plan, clean_this_month, eligible_this_month, monthly_cap')
     .eq('client_id', clientId)
     .single();
   if (error || !data) {
     return { ok: false as const, reason: 'usage row not found', used: 0, cap: 0, plan: 'starter' };
   }
   const plan = planByTier(data.plan);
-  const used = Number(data.clean_this_month ?? 0);
+  // Prefer eligible_this_month (quality-first count) when present, fall back
+  // to clean_this_month for tenants whose view hasn't refreshed yet.
+  const used = Number(data.eligible_this_month ?? data.clean_this_month ?? 0);
   const cap  = Number(data.monthly_cap ?? plan.features.monthlyCleanLeads);
 
   if (used >= cap) {

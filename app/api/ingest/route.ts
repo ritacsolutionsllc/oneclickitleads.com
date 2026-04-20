@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { scoringColumns, sourceTierFor, type SourceKind } from '@/lib/quality/score';
 
 /**
  * POST /api/ingest
@@ -29,17 +30,21 @@ export async function POST(req: NextRequest) {
     .from('clients').select('id').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
+  const kind = (source?.kind ?? 'api') as SourceKind;
   const { data: srcRow } = await supabase
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: source?.kind ?? 'api',
+      kind,
+      tier: sourceTierFor(kind),
       label: source?.label ?? null,
       source_url: source?.source_url ?? null,
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    source_kind: kind,
+  });
 
   const inserts = scrubbed.map((s) => ({
     client_id: client.id,
@@ -67,6 +72,7 @@ export async function POST(req: NextRequest) {
     reject_reason: s.reject_reason,
     raw: s,
     scrubbed_at: new Date().toISOString(),
+    ...scoringColumns(s.quality),
   }));
 
   // upsert on (client_id, email_hash) — hash is computed by the DB trigger
@@ -76,5 +82,8 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ingested: inserts.length,
     clean: inserts.filter((r) => r.is_scrubbed).length,
+    approved: inserts.filter((r) => r.lead_status === 'approved').length,
+    in_review: inserts.filter((r) => r.lead_status === 'review').length,
+    rejected: inserts.filter((r) => r.lead_status === 'rejected').length,
   });
 }

@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import {
+  applyExportGate,
+  EXPORT_MIN_QUALITY_SCORE,
+  EXPORT_POLICY_SUMMARY,
+} from '@/lib/quality/export-gate';
 
 /**
  * POST /api/push/smartly
@@ -54,19 +59,27 @@ export async function POST(req: NextRequest) {
     .from('clients').select('id').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
-  // Build the query
+  // Clients can tighten the quality floor above the platform default but
+  // cannot ship records that fall below it.
+  const effectiveMinScore = Math.max(Number(min_score) || 0, EXPORT_MIN_QUALITY_SCORE);
+
   let q = supabase
     .from('leads')
-    .select('email, phone_e164, first_name, last_name, city, region, country, scrub_score')
+    .select('id, email, phone_e164, first_name, last_name, city, region, country, quality_score')
     .eq('client_id', client.id)
-    .eq('is_scrubbed', true)
-    .gte('scrub_score', min_score);
+    .gte('quality_score', effectiveMinScore)
+    .order('quality_score', { ascending: false, nullsFirst: false });
+  q = applyExportGate(q);
   if (segment) q = q.eq('icp_segment', segment);
 
   const { data: leads, error: qErr } = await q;
   if (qErr) return NextResponse.json({ error: qErr.message }, { status: 500 });
   if (!leads?.length)
-    return NextResponse.json({ error: 'no leads match filters', filters: { segment, min_score } }, { status: 400 });
+    return NextResponse.json({
+      error: 'no leads match filters',
+      filters: { segment, min_score: effectiveMinScore },
+      policy: EXPORT_POLICY_SUMMARY,
+    }, { status: 400 });
 
   // Hash for Custom Audience upload
   const users = await Promise.all(
@@ -124,9 +137,22 @@ export async function POST(req: NextRequest) {
   await supabase.from('exports').insert({
     client_id: client.id,
     destination: 'smartly',
-    filters: { segment, min_score, audience_name, audience_id: returnedId },
+    filters: {
+      segment,
+      min_score: effectiveMinScore,
+      audience_name,
+      audience_id: returnedId,
+      policy: EXPORT_POLICY_SUMMARY,
+    },
     row_count: users.length,
   });
+
+  // Flip approved → exported so the same lead can't be double-counted against
+  // the monthly cap on the next run.
+  await supabase
+    .from('leads')
+    .update({ lead_status: 'exported' })
+    .in('id', leads.map((l) => l.id));
 
   return NextResponse.json({
     pushed: users.length,

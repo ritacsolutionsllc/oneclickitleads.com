@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch } from '@/utils/scrub/pipeline';
+import { scoringColumns, sourceTierFor } from '@/lib/quality/score';
 
 /**
  * GET /api/places-salons?query=eyebrow+salon+Los+Angeles+CA&client=chella&segment=salon
@@ -91,8 +92,9 @@ export async function GET(request: Request) {
         place_id: p.id,
         primary_type: p.primaryType,
         opening_hours: p.regularOpeningHours?.weekdayDescriptions,
-        raw_rating: p.rating,
-        raw_rating_count: p.userRatingCount,
+        rating: p.rating,
+        rating_count: p.userRatingCount,
+        website: p.websiteUri,
       };
     });
 
@@ -105,13 +107,16 @@ export async function GET(request: Request) {
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: 'scraped',
+      kind: 'places',
+      tier: sourceTierFor('places'),
       label: `google_places: ${query}`,
       source_url: 'https://places.googleapis.com/v1/places:searchText',
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    source_kind: 'places',
+  });
 
   const toInsert = scrubbed.map((s) => ({
     client_id: client.id,
@@ -125,6 +130,9 @@ export async function GET(request: Request) {
     region: s.region,
     country: s.country,
     tags: s.tags ?? [],
+    rating: s.rating ?? null,
+    rating_count: s.rating_count ?? null,
+    website: (s as { website?: string }).website ?? null,
     is_scrubbed: s.is_scrubbed,
     is_duplicate: s.is_duplicate,
     syntax_valid: s.syntax_valid,
@@ -134,6 +142,7 @@ export async function GET(request: Request) {
     reject_reason: s.reject_reason,
     raw: s,
     scrubbed_at: new Date().toISOString(),
+    ...scoringColumns(s.quality),
   }));
 
   const { error } = await supabase.from('leads').insert(toInsert);
@@ -145,6 +154,8 @@ export async function GET(request: Request) {
     with_website: rows.filter((r) => r.source_url).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    approved: toInsert.filter((r) => r.lead_status === 'approved').length,
+    in_review: toInsert.filter((r) => r.lead_status === 'review').length,
     error: error?.message,
   });
 }

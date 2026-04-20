@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scoreLead, scoringColumns } from '@/lib/quality/score';
+import { hasValidSyntax, hasMxRecord, normalizeEmail } from '@/utils/scrub/email';
 
 /**
  * POST /api/enrich
@@ -25,7 +27,9 @@ export async function POST(req: NextRequest) {
 
   const { data: targets } = await supabase
     .from('leads')
-    .select('id, website')
+    .select(
+      'id, website, phone_e164, company, title, city, region, country, icp_segment, tags, rating, rating_count, source_tier, created_at'
+    )
     .eq('client_id', client.id)
     .is('email', null)
     .not('website', 'is', null)
@@ -44,13 +48,52 @@ export async function POST(req: NextRequest) {
     };
     const top = data?.emails?.[0];
     if (!top?.value || (top.confidence ?? 0) < 70) continue;
+
+    const email = normalizeEmail(top.value);
+    const syntax_valid = hasValidSyntax(email);
+    const mx_valid = syntax_valid ? await hasMxRecord(email) : false;
+    const first_name = top.first_name ?? null;
+    const last_name = top.last_name ?? null;
+    const title = top.position ?? null;
+
+    const quality = scoreLead({
+      email,
+      phone_e164: t.phone_e164 ?? null,
+      first_name,
+      last_name,
+      company: t.company ?? null,
+      title,
+      city: t.city ?? null,
+      region: t.region ?? null,
+      country: t.country ?? null,
+      icp_segment: t.icp_segment ?? null,
+      tags: t.tags ?? null,
+      syntax_valid,
+      mx_valid,
+      smtp_valid: false,
+      is_disposable: false,
+      is_duplicate: false,
+      is_suppressed: false,
+      source_kind: 'enriched',
+      rating: t.rating ?? null,
+      rating_count: t.rating_count ?? null,
+      created_at: t.created_at ?? null,
+      verified_at: new Date(),
+    });
+
     await supabase
       .from('leads')
       .update({
-        email: top.value,
-        first_name: top.first_name ?? null,
-        last_name: top.last_name ?? null,
-        title: top.position ?? null,
+        email,
+        first_name,
+        last_name,
+        title,
+        syntax_valid,
+        mx_valid,
+        is_scrubbed: mx_valid,
+        reject_reason: mx_valid ? null : 'no_mx',
+        verified_at: new Date().toISOString(),
+        ...scoringColumns(quality),
       })
       .eq('id', t.id);
     updated++;

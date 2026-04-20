@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scoreLead, scoringColumns } from '@/lib/quality/score';
+import { hasMxRecord, hasValidSyntax, normalizeEmail } from '@/utils/scrub/email';
 
 /**
  * POST /api/harvest-emails
@@ -43,7 +45,9 @@ export async function POST(req: NextRequest) {
   // Leads with a website (in raw->source_url) but no email yet.
   let q = supabase
     .from('leads')
-    .select('id, company, city, region, raw')
+    .select(
+      'id, company, title, phone_e164, city, region, country, icp_segment, tags, rating, rating_count, raw, created_at'
+    )
     .eq('client_id', client.id)
     .is('email', null)
     .not('raw->>source_url', 'is', null)
@@ -67,13 +71,46 @@ export async function POST(req: NextRequest) {
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
       if (hit.email) {
+        const email = normalizeEmail(hit.email);
+        const syntax_valid = hasValidSyntax(email);
+        const mx_valid = syntax_valid ? await hasMxRecord(email) : false;
+
+        const quality = scoreLead({
+          email,
+          phone_e164: lead.phone_e164 ?? null,
+          first_name: null,
+          last_name: null,
+          company: lead.company ?? null,
+          title: lead.title ?? null,
+          city: lead.city ?? null,
+          region: lead.region ?? null,
+          country: lead.country ?? null,
+          icp_segment: lead.icp_segment ?? null,
+          tags: lead.tags ?? null,
+          syntax_valid,
+          mx_valid,
+          smtp_valid: false,
+          is_disposable: false,
+          is_duplicate: false,
+          is_suppressed: false,
+          source_kind: 'enriched',
+          rating: lead.rating ?? null,
+          rating_count: lead.rating_count ?? null,
+          created_at: lead.created_at ?? null,
+          verified_at: new Date(),
+        });
+
         await supabase
           .from('leads')
           .update({
-            email: hit.email,
-            syntax_valid: true,
-            reject_reason: null,
+            email,
+            syntax_valid,
+            mx_valid,
+            is_scrubbed: mx_valid,
+            reject_reason: mx_valid ? null : 'no_mx',
+            verified_at: new Date().toISOString(),
             raw: { ...(lead.raw as object), harvested_from: hit.found_on },
+            ...scoringColumns(quality),
           })
           .eq('id', lead.id);
       }

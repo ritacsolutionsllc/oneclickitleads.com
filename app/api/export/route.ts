@@ -3,6 +3,11 @@ import { createClient } from '@/utils/supabase/server';
 import Papa from 'papaparse';
 import { enforceExport, maxRowsForExport } from '@/utils/plans/enforce';
 import { planByTier } from '@/lib/plans';
+import {
+  applyExportGate,
+  EXPORT_MIN_QUALITY_SCORE,
+  EXPORT_POLICY_SUMMARY,
+} from '@/lib/quality/export-gate';
 
 /**
  * GET /api/export?client=chella&format=csv|smartly&segment=salon&min_score=60
@@ -47,15 +52,22 @@ export async function GET(req: NextRequest) {
   const plan = planByTier(client.plan);
   const rowLimit = maxRowsForExport(plan, cap.remaining ?? 10_000);
 
+  // Clients can RAISE the quality floor past the platform default but not
+  // lower it — the export gate is a floor, not a ceiling.
+  const effectiveMinScore = Math.max(minScore || 0, EXPORT_MIN_QUALITY_SCORE);
+
   let q = supabase
     .from('leads')
-    .select('email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, scrub_score')
+    .select(
+      'id, email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, quality_score, verification_status, reason_codes'
+    )
     .eq('client_id', client.id)
-    .eq('is_scrubbed', true)
+    .gte('quality_score', effectiveMinScore)
+    .order('quality_score', { ascending: false, nullsFirst: false })
     .order('lead_quality_score', { ascending: false, nullsFirst: false })
     .limit(rowLimit);
+  q = applyExportGate(q);
   if (segment) q = q.eq('icp_segment', segment);
-  if (minScore) q = q.gte('scrub_score', minScore);
 
   const { data: leads, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
@@ -66,9 +78,24 @@ export async function GET(req: NextRequest) {
     client_id: client.id,
     destination: format === 'smartly' ? 'smartly' : 'csv',
     row_count: rows.length,
-    filters: { segment, min_score: minScore || undefined },
+    filters: {
+      segment,
+      min_score: effectiveMinScore,
+      policy: EXPORT_POLICY_SUMMARY,
+    },
     created_by: user.id,
   });
+
+  // Flip approved → exported so the audit trail reflects that these rows
+  // actually left the platform. Admin client would be required to bypass RLS
+  // but our SELECT above already proved ownership, so this is safe under the
+  // user's session.
+  if (rows.length) {
+    await supabase
+      .from('leads')
+      .update({ lead_status: 'exported' })
+      .in('id', rows.map((r) => r.id));
+  }
 
   if (format === 'smartly') {
     const hashed = await Promise.all(
@@ -77,7 +104,23 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ account_id: process.env.SMARTLY_ACCOUNT_ID, audience: hashed });
   }
 
-  const csv = Papa.unparse(rows);
+  // Project to the client-facing CSV columns. Internal bookkeeping (id,
+  // reason_codes) stays out of the downloaded file.
+  const csvRows = rows.map((r) => ({
+    email: r.email,
+    first_name: r.first_name,
+    last_name: r.last_name,
+    phone_e164: r.phone_e164,
+    company: r.company,
+    title: r.title,
+    icp_segment: r.icp_segment,
+    city: r.city,
+    region: r.region,
+    country: r.country,
+    quality_score: r.quality_score,
+    verification_status: r.verification_status,
+  }));
+  const csv = Papa.unparse(csvRows);
   return new NextResponse(csv, {
     headers: {
       'Content-Type': 'text/csv',

@@ -1,5 +1,8 @@
 import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import { scoreLead, scoringColumns } from '@/lib/quality/score';
+import { hasValidSyntax, normalizeEmail } from '@/utils/scrub/email';
+import { normalizePhone } from '@/utils/scrub/phone';
 
 type SearchParams = { client?: string; error?: string; ok?: string };
 
@@ -52,14 +55,40 @@ export default async function SubmitLead({
         );
       }
 
-      const { error: insertErr } = await supabase.from('leads').insert({
-        client_id: client!.id,
-        email,
+      // Score inline: first-party opt-in with explicit consent, but we
+      // haven't verified the email yet. Lands in 'review' until the nightly
+      // re-verification pass promotes it once MX/SMTP succeed.
+      const normalizedEmail = normalizeEmail(email);
+      const syntax_valid = hasValidSyntax(normalizedEmail);
+      const phone_e164 = phone ? normalizePhone(phone) : null;
+      const quality = scoreLead({
+        email: normalizedEmail,
+        phone_e164,
         first_name,
         last_name: last_name || null,
-        phone_e164: phone || null,
         icp_segment,
+        tags: ['form', 'opted_in'],
+        syntax_valid,
+        mx_valid: false,
+        smtp_valid: false,
+        is_disposable: false,
+        is_duplicate: false,
+        is_suppressed: false,
+        source_kind: 'form',
+        verified_at: new Date(),
+      });
+
+      const { error: insertErr } = await supabase.from('leads').insert({
+        client_id: client!.id,
+        email: normalizedEmail,
+        first_name,
+        last_name: last_name || null,
+        phone_e164,
+        icp_segment,
+        tags: ['form', 'opted_in'],
+        syntax_valid,
         raw: Object.fromEntries(formData.entries()),
+        ...scoringColumns(quality),
       });
 
       if (insertErr) {
