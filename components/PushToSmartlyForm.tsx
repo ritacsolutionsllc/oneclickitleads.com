@@ -61,7 +61,7 @@ export default function PushToSmartlyForm({ clientSlug }: { clientSlug: string }
         </label>
 
         <label className="text-sm">
-          <div className="text-xs text-neutral-600 mb-1">Min scrub score</div>
+          <div className="text-xs text-neutral-600 mb-1">Min composite score</div>
           <input
             type="number"
             min={0}

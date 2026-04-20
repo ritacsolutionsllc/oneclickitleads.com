@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scrubEmail } from '@/utils/scrub/email';
+import { rescoreLead } from '@/utils/scoring/rescore';
 
 /**
  * POST /api/harvest-emails
@@ -55,6 +57,7 @@ export async function POST(req: NextRequest) {
   if (!leads?.length) return NextResponse.json({ checked: 0, updated: 0, sites: [] });
 
   const results: HarvestResult[] = [];
+  let rescored = 0;
   // Limited concurrency — be polite to small salon sites.
   const pool = 4;
   const queue = [...leads];
@@ -66,17 +69,37 @@ export async function POST(req: NextRequest) {
       if (!site) continue;
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
-      if (hit.email) {
-        await supabase
-          .from('leads')
-          .update({
-            email: hit.email,
-            syntax_valid: true,
-            reject_reason: null,
-            raw: { ...(lead.raw as object), harvested_from: hit.found_on },
-          })
-          .eq('id', lead.id);
-      }
+      if (!hit.email) continue;
+
+      // Validate the harvested email through the same pipeline scrubEmail
+      // uses at ingest, so identity/MX/disposable flags are honest and the
+      // rescore reflects reality.
+      const scrub = await scrubEmail(hit.email);
+      const isScrubbed =
+        scrub.syntax_valid && scrub.mx_valid && !scrub.is_disposable;
+      const now = new Date().toISOString();
+      const { error: upErr } = await supabase
+        .from('leads')
+        .update({
+          email: scrub.normalized || hit.email,
+          syntax_valid: scrub.syntax_valid,
+          mx_valid: scrub.mx_valid,
+          smtp_valid: scrub.smtp_valid,
+          is_disposable: scrub.is_disposable,
+          scrub_score: scrub.score,
+          reject_reason: scrub.reject_reason ?? null,
+          is_scrubbed: isScrubbed,
+          scrubbed_at: now,
+          raw: { ...(lead.raw as object), harvested_from: hit.found_on },
+        })
+        .eq('id', lead.id);
+      if (upErr) continue;
+
+      const res = await rescoreLead(supabase as never, lead.id, {
+        verifiedAt: now,
+        verifiedBy: 'harvest-emails',
+      });
+      if (res?.updated) rescored++;
     }
   }
   await Promise.all(Array.from({ length: pool }, worker));
@@ -85,6 +108,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     checked: results.length,
     updated,
+    rescored,
     sites: results.slice(0, 25),
   });
 }
