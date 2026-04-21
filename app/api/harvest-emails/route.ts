@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { rescoreLead } from '@/utils/scoring/rescore';
 
 /**
  * POST /api/harvest-emails
@@ -67,7 +68,7 @@ export async function POST(req: NextRequest) {
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
       if (hit.email) {
-        await supabase
+        const { error: updErr } = await supabase
           .from('leads')
           .update({
             email: hit.email,
@@ -76,6 +77,15 @@ export async function POST(req: NextRequest) {
             raw: { ...(lead.raw as object), harvested_from: hit.found_on },
           })
           .eq('id', lead.id);
+        // Harvested emails only pass syntax + the junk-domain filter — MX
+        // and SMTP are still unverified, so we rescore but leave is_scrubbed
+        // untouched (will flip to true once /api/enrich or /api/ingest
+        // re-runs with a real verifier).
+        if (!updErr) {
+          await rescoreLead(supabase as never, lead.id, {
+            verifiedBy: 'harvest-emails',
+          });
+        }
       }
     }
   }

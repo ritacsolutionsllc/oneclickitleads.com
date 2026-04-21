@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
+import { loadClientScoringContextBySlug } from '@/utils/scoring/context';
 
 /**
  * POST /api/scrape-webscrapingai
@@ -73,20 +74,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'max 50 urls per request' }, { status: 400 });
 
   const supabase = createAdminClient();
-  const { data: client } = await supabase
-    .from('clients')
-    .select('id')
-    .eq('slug', client_slug)
-    .single();
-  if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+  const ctx = await loadClientScoringContextBySlug(supabase as never, client_slug);
+  if (!ctx) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
   const { data: src } = await supabase
     .from('sources')
     .insert({
-      client_id: client.id,
+      client_id: ctx.clientId,
       kind: 'scraped',
       label: `webscraping.ai: ${urls.length} url${urls.length > 1 ? 's' : ''}${segment ? ` (${segment})` : ''}`,
       source_url: 'https://api.webscraping.ai/html',
+      trust_tier: 4,
     })
     .select('id')
     .single();
@@ -128,9 +126,14 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, ctx.clientId, rows, {
+    doEnrich: true,
+    sourceTrustTier: 4,
+    clientIcpTargets: ctx.icpTargets,
+    exportPolicy: ctx.exportPolicy,
+  });
   const toInsert = scrubbed.map((s) => ({
-    client_id: client.id,
+    client_id: ctx.clientId,
     source_id: src?.id,
     company: s.company,
     phone_e164: s.phone_e164,

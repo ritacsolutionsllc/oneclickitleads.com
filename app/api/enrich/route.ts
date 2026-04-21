@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { rescoreLead } from '@/utils/scoring/rescore';
 
 /**
  * POST /api/enrich
@@ -8,6 +9,11 @@ import { createAdminClient } from '@/utils/supabase/server';
  * Finds leads in the client's DB that have a website but no email, calls
  * Hunter.io domain-search, and writes the top verified email back. Runs
  * nightly via pg_cron or on-demand from the dashboard.
+ *
+ * Each successful enrichment is followed by a rescore — Hunter-attached
+ * emails typically raise identity + completeness scores enough to move a
+ * lead from `review`/`hold` into an exportable tier. Without rescoring, the
+ * export gate would keep enriched leads quarantined with stale sub-scores.
  */
 export async function POST(req: NextRequest) {
   const secret = req.headers.get('x-ingest-secret');
@@ -44,15 +50,25 @@ export async function POST(req: NextRequest) {
     };
     const top = data?.emails?.[0];
     if (!top?.value || (top.confidence ?? 0) < 70) continue;
-    await supabase
+    const { error: updErr } = await supabase
       .from('leads')
       .update({
         email: top.value,
         first_name: top.first_name ?? null,
         last_name: top.last_name ?? null,
         title: top.position ?? null,
+        syntax_valid: true,
       })
       .eq('id', t.id);
+    if (updErr) continue;
+    // Hunter returns addresses that passed its own deliverability checks
+    // (confidence >= 70 by the filter above), so mark the lead as scrubbed
+    // and re-run scoring so export_tier reflects the new identity +
+    // completeness signals.
+    await rescoreLead(supabase as never, t.id, {
+      verifiedBy: `hunter:confidence:${top.confidence ?? 0}`,
+      setIsScrubbed: true,
+    });
     updated++;
   }
 
