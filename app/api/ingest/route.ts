@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
+import { loadClientContext, trustTierForKind } from '@/utils/scoring/client-context';
 
 /**
  * POST /api/ingest
@@ -34,24 +35,32 @@ export async function POST(req: NextRequest) {
 
   const supabase = createAdminClient();
 
-  const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', client_slug).single();
-  if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+  const ctx = await loadClientContext(supabase, client_slug);
+  if (!ctx) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+
+  const sourceKind = source?.kind ?? 'api';
+  const trustTier = Number(source?.trust_tier) || trustTierForKind(sourceKind);
 
   const { data: srcRow } = await supabase
     .from('sources')
     .insert({
-      client_id: client.id,
-      kind: source?.kind ?? 'api',
+      client_id: ctx.id,
+      kind: sourceKind,
       label: source?.label ?? null,
       source_url: source?.source_url ?? null,
+      trust_tier: trustTier,
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase, ctx.id, rows, {
+    doEnrich: true,
+    sourceTrustTier: trustTier,
+    clientIcpTargets: ctx.icpTargets,
+    exportPolicy: ctx.exportPolicy,
+  });
 
   const inserts = scrubbed.map((s) => ({
-    client_id: client.id,
+    client_id: ctx.id,
     source_id: srcRow?.id,
     first_name: s.first_name,
     last_name: s.last_name,

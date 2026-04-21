@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scrubEmail } from '@/utils/scrub/email';
+import { scoreLead } from '@/utils/scoring/score';
+import { assignTier } from '@/utils/scoring/tier';
+import { loadClientContext } from '@/utils/scoring/client-context';
 
 /**
  * POST /api/harvest-emails
@@ -9,9 +13,11 @@ import { createAdminClient } from '@/utils/supabase/server';
  * no email yet, fetch the site + /contact + /about and extract emails via
  * regex. Handles common obfuscation ([at]/(at), [dot]/(dot), HTML entities).
  *
+ * When an email is found, we validate it (syntax + MX), then rescore and
+ * re-tier the lead in place — otherwise a harvested row stays stuck at the
+ * unscored tier the scraper first assigned.
+ *
  * Pattern inspired by OneClickIT-ai/ritac-security-scanner's email_harvester.py.
- * This is a free supplement to Hunter/Snov — catches long-tail salons whose
- * emails don't live in Hunter's index but are printed on their own homepage.
  */
 
 const CONTACT_PATHS = ['', '/contact', '/contact-us', '/contact.html', '/about', '/about-us'];
@@ -36,15 +42,20 @@ export async function POST(req: NextRequest) {
   if (!client_slug) return NextResponse.json({ error: 'client_slug required' }, { status: 400 });
 
   const supabase = createAdminClient();
-  const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', client_slug).single();
-  if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+  const ctx = await loadClientContext(supabase, client_slug);
+  if (!ctx) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+  // Hoist narrowed values so the worker closure doesn't lose the non-null
+  // narrowing across async boundaries.
+  const clientIcpTargets = ctx.icpTargets;
+  const clientExportPolicy = ctx.exportPolicy;
 
   // Leads with a website (in raw->source_url) but no email yet.
   let q = supabase
     .from('leads')
-    .select('id, company, city, region, raw')
-    .eq('client_id', client.id)
+    .select(
+      'id, company, title, phone_e164, city, region, country, icp_segment, raw'
+    )
+    .eq('client_id', ctx.id)
     .is('email', null)
     .not('raw->>source_url', 'is', null)
     .limit(limit);
@@ -66,17 +77,64 @@ export async function POST(req: NextRequest) {
       if (!site) continue;
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
-      if (hit.email) {
-        await supabase
-          .from('leads')
-          .update({
-            email: hit.email,
-            syntax_valid: true,
-            reject_reason: null,
-            raw: { ...(lead.raw as object), harvested_from: hit.found_on },
-          })
-          .eq('id', lead.id);
-      }
+      if (!hit.email) continue;
+
+      // Validate the discovered email, then rescore the lead with the new
+      // identity signal so its tier reflects reality. Trust tier stays 4 —
+      // the row was originally scraped; finding a contact email doesn't
+      // upgrade the source lineage.
+      const verdict = await scrubEmail(hit.email);
+      const scores = scoreLead({
+        syntax_valid: verdict.syntax_valid,
+        mx_valid: verdict.mx_valid,
+        smtp_valid: verdict.smtp_valid,
+        is_disposable: verdict.is_disposable,
+        is_duplicate: false,
+        is_suppressed: false,
+        email: verdict.normalized,
+        phone_e164: lead.phone_e164 ?? null,
+        company: lead.company ?? null,
+        title: lead.title ?? null,
+        city: lead.city ?? null,
+        region: lead.region ?? null,
+        country: lead.country ?? null,
+        icp_segment: lead.icp_segment ?? null,
+        client_icp_targets: clientIcpTargets,
+        source_trust_tier: 4,
+        verified_at: null,
+      });
+      const nowIso = new Date().toISOString();
+      const export_tier = assignTier({
+        composite_score: scores.composite_score,
+        is_scrubbed: verdict.syntax_valid && verdict.mx_valid && !verdict.is_disposable,
+        policy: clientExportPolicy,
+      });
+
+      await supabase
+        .from('leads')
+        .update({
+          email: verdict.normalized,
+          syntax_valid: verdict.syntax_valid,
+          mx_valid: verdict.mx_valid,
+          smtp_valid: verdict.smtp_valid,
+          is_disposable: verdict.is_disposable,
+          scrub_score: verdict.score,
+          reject_reason: verdict.reject_reason ?? null,
+          is_scrubbed:
+            verdict.syntax_valid && verdict.mx_valid && !verdict.is_disposable,
+          identity_score: scores.identity_score,
+          icp_fit_score: scores.icp_fit_score,
+          completeness_score: scores.completeness_score,
+          freshness_score: scores.freshness_score,
+          intent_score: scores.intent_score,
+          source_confidence: scores.source_confidence,
+          export_tier,
+          verified_at: nowIso,
+          verified_by: 'harvest-emails',
+          scrubbed_at: nowIso,
+          raw: { ...(lead.raw as object), harvested_from: hit.found_on },
+        })
+        .eq('id', lead.id);
     }
   }
   await Promise.all(Array.from({ length: pool }, worker));

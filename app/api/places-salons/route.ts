@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
+import { loadClientContext, trustTierForKind } from '@/utils/scoring/client-context';
 
 /**
  * GET /api/places-salons?query=eyebrow+salon+Los+Angeles+CA&client=chella&segment=salon
@@ -105,24 +106,31 @@ export async function GET(request: Request) {
     });
 
   const supabase = createAdminClient();
-  const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', clientSlug).single();
-  if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+  const ctx = await loadClientContext(supabase, clientSlug);
+  if (!ctx) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+
+  const trustTier = trustTierForKind('scraped');
 
   const { data: src } = await supabase
     .from('sources')
     .insert({
-      client_id: client.id,
+      client_id: ctx.id,
       kind: 'scraped',
       label: `google_places: ${query}`,
       source_url: 'https://places.googleapis.com/v1/places:searchText',
+      trust_tier: trustTier,
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase, ctx.id, rows, {
+    doEnrich: true,
+    sourceTrustTier: trustTier,
+    clientIcpTargets: ctx.icpTargets,
+    exportPolicy: ctx.exportPolicy,
+  });
 
   const toInsert = scrubbed.map((s) => ({
-    client_id: client.id,
+    client_id: ctx.id,
     source_id: src?.id,
     company: s.company,
     phone_e164: s.phone_e164,

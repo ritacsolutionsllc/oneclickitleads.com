@@ -1,5 +1,7 @@
-import { createClient } from '@/utils/supabase/server';
+import { createAdminClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
+import { loadClientContext } from '@/utils/scoring/client-context';
 
 type SearchParams = { client?: string; error?: string; ok?: string };
 
@@ -23,44 +25,95 @@ export default async function SubmitLead({
     const phone = ((formData.get('phone') as string) || '').trim();
     const icp_segment =
       ((formData.get('icp_segment') as string) || '').trim() || 'b2c_beauty';
+    const consent = formData.get('consent') === 'on';
 
     if (!email || !first_name) {
       redirect(
         `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('Please enter your first name and email.')}`,
       );
     }
+    if (!consent) {
+      redirect(
+        `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('Please agree to receive marketing emails.')}`,
+      );
+    }
 
     try {
-      const supabase = await createClient();
+      // Public consent form — there is no authenticated session, so the user-
+      // scoped SSR client would see zero rows under RLS. Use the service role
+      // client scoped to this specific slug; nothing in the form writes a
+      // client-chosen `client_id`.
+      const supabase = createAdminClient();
 
-      const { data: client, error: clientErr } = await supabase
-        .from('clients')
-        .select('id')
-        .eq('slug', slug)
-        .maybeSingle();
-
-      if (clientErr) {
-        console.error('[submit-lead] client lookup failed:', clientErr);
-        redirect(
-          `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('Something went wrong on our end. Please try again.')}`,
-        );
-      }
-
-      if (!client) {
+      const ctx = await loadClientContext(supabase, slug);
+      if (!ctx) {
         redirect(
           `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('This signup link is no longer active.')}`,
         );
       }
 
-      const { error: insertErr } = await supabase.from('leads').insert({
-        client_id: client!.id,
-        email,
-        first_name,
-        last_name: last_name || null,
-        phone_e164: phone || null,
-        icp_segment,
-        raw: Object.fromEntries(formData.entries()),
-      });
+      // Record the consent form as a first-party source so the audit trail
+      // can distinguish opt-ins from purchased / scraped rows.
+      const { data: src } = await supabase
+        .from('sources')
+        .insert({
+          client_id: ctx!.id,
+          kind: 'firstparty',
+          label: 'consent form: /submit-lead',
+          source_url: '/submit-lead',
+          trust_tier: 1,
+        })
+        .select('id')
+        .single();
+
+      const [scrubbed] = await scrubBatch(
+        supabase,
+        ctx!.id,
+        [
+          {
+            email,
+            phone: phone || undefined,
+            first_name,
+            last_name: last_name || undefined,
+            icp_segment,
+          },
+        ],
+        {
+          doEnrich: false, // don't burn Hunter credits on B2C consent forms
+          sourceTrustTier: 1,
+          clientIcpTargets: ctx!.icpTargets,
+          exportPolicy: ctx!.exportPolicy,
+        },
+      );
+
+      // Duplicates and suppressed rows still write (with the appropriate
+      // reject_reason + tier='discard'), so Keaton can see attempted re-signups
+      // in the audit log rather than silently swallowing them.
+      const { error: insertErr } = await supabase.from('leads').upsert(
+        {
+          client_id: ctx!.id,
+          source_id: src?.id,
+          email: scrubbed.normalized_email,
+          first_name: scrubbed.first_name,
+          last_name: scrubbed.last_name,
+          phone_e164: scrubbed.phone_e164,
+          icp_segment,
+          tags: ['consent_form', 'opted_in'],
+          is_scrubbed: scrubbed.is_scrubbed,
+          syntax_valid: scrubbed.syntax_valid,
+          mx_valid: scrubbed.mx_valid,
+          smtp_valid: scrubbed.smtp_valid,
+          is_disposable: scrubbed.is_disposable,
+          is_duplicate: scrubbed.is_duplicate,
+          is_suppressed: scrubbed.is_suppressed,
+          scrub_score: scrubbed.scrub_score,
+          reject_reason: scrubbed.reject_reason,
+          ...scoringInsertFields(scrubbed),
+          raw: Object.fromEntries(formData.entries()),
+          scrubbed_at: new Date().toISOString(),
+        },
+        { onConflict: 'client_id,email_hash', ignoreDuplicates: true },
+      );
 
       if (insertErr) {
         console.error('[submit-lead] insert failed:', insertErr);
