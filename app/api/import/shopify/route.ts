@@ -4,7 +4,7 @@ import Papa from 'papaparse';
 import { normalizeEmail } from '@/utils/scrub/email';
 import { normalizePhone } from '@/utils/scrub/phone';
 import { scoreLead } from '@/utils/scoring/score';
-import { assignTier } from '@/utils/scoring/tier';
+import { assignTierWithReason } from '@/utils/scoring/tier';
 
 /**
  * POST /api/import/shopify
@@ -92,10 +92,13 @@ export async function POST(req: NextRequest) {
       source_trust_tier: 1,
       verified_at: null,
     });
-    const export_tier = assignTier({
+    const tier = assignTierWithReason({
       composite_score: scores.composite_score,
       is_scrubbed: true,
     });
+    const reason_codes = Array.from(
+      new Set<string>([...scores.reason_codes, ...tier.reason_codes, 'shopify_firstparty'])
+    );
     return {
       client_id: client.id,
       source_id: src?.id,
@@ -125,7 +128,9 @@ export async function POST(req: NextRequest) {
       freshness_score: scores.freshness_score,
       intent_score: scores.intent_score,
       source_confidence: scores.source_confidence,
-      export_tier,
+      export_tier: tier.tier,
+      review_state: tier.review_state,
+      reason_codes,
       verified_at: now,
       verified_by: 'shopify-import',
       raw: r,

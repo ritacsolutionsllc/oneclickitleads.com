@@ -1,7 +1,12 @@
-import { createClient } from '@/utils/supabase/server';
+import { createClient, createAdminClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
+import type { ExportPolicy } from '@/utils/scoring/tier';
 
 type SearchParams = { client?: string; error?: string; ok?: string };
+
+const ALLOWED_SEGMENTS = ['b2c_beauty', 'salon', 'retailer', 'influencer'] as const;
+type Segment = (typeof ALLOWED_SEGMENTS)[number];
 
 export default async function SubmitLead({
   searchParams,
@@ -14,15 +19,20 @@ export default async function SubmitLead({
     'use server';
 
     const slug =
-      ((formData.get('client_slug') as string) || '').trim() || 'chella';
+      ((formData.get('client_slug') as string) || '').trim().slice(0, 80) || 'chella';
     const email = ((formData.get('email') as string) || '')
       .trim()
-      .toLowerCase();
-    const first_name = ((formData.get('first_name') as string) || '').trim();
-    const last_name = ((formData.get('last_name') as string) || '').trim();
-    const phone = ((formData.get('phone') as string) || '').trim();
-    const icp_segment =
+      .toLowerCase()
+      .slice(0, 200);
+    const first_name = ((formData.get('first_name') as string) || '').trim().slice(0, 80);
+    const last_name = ((formData.get('last_name') as string) || '').trim().slice(0, 80);
+    const phone = ((formData.get('phone') as string) || '').trim().slice(0, 40);
+    const rawSegment =
       ((formData.get('icp_segment') as string) || '').trim() || 'b2c_beauty';
+    const icp_segment: Segment = (ALLOWED_SEGMENTS as readonly string[]).includes(rawSegment)
+      ? (rawSegment as Segment)
+      : 'b2c_beauty';
+    const consent = formData.get('consent') === 'on';
 
     if (!email || !first_name) {
       redirect(
@@ -30,12 +40,19 @@ export default async function SubmitLead({
       );
     }
 
-    try {
-      const supabase = await createClient();
+    if (!consent) {
+      redirect(
+        `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('Please agree to the privacy policy to continue.')}`,
+      );
+    }
 
-      const { data: client, error: clientErr } = await supabase
+    try {
+      // User-scoped client first, so RLS + auth errors surface before we
+      // touch the admin path. The admin client writes the scored lead.
+      const userSupabase = await createClient();
+      const { data: client, error: clientErr } = await userSupabase
         .from('clients')
-        .select('id')
+        .select('id, export_policy')
         .eq('slug', slug)
         .maybeSingle();
 
@@ -52,14 +69,67 @@ export default async function SubmitLead({
         );
       }
 
-      const { error: insertErr } = await supabase.from('leads').insert({
+      // Self-serve form submissions are tier-2 (API-verified consented opt-in)
+      // — better than scraped (tier 4) but still below verified first-party
+      // purchase data from Shopify (tier 1). The scrub pipeline decides the
+      // final export_tier / review_state; we never trust the form alone.
+      const admin = createAdminClient();
+      const { data: src } = await admin
+        .from('sources')
+        .insert({
+          client_id: client!.id,
+          kind: 'firstparty',
+          label: `submit-lead form (${icp_segment})`,
+          source_url: '/submit-lead',
+          trust_tier: 2,
+        })
+        .select('id')
+        .single();
+
+      const scrubbed = await scrubBatch(
+        admin as never,
+        client!.id,
+        [
+          {
+            email,
+            phone: phone || undefined,
+            first_name,
+            last_name: last_name || undefined,
+            icp_segment,
+            tags: ['submit-lead', 'opted_in'],
+            source_url: '/submit-lead',
+          },
+        ],
+        {
+          doEnrich: false,
+          sourceTrustTier: 2,
+          verifiedBy: 'submit-lead-form',
+          exportPolicy: (client!.export_policy ?? null) as ExportPolicy | null,
+        },
+      );
+      const s = scrubbed[0];
+
+      const { error: insertErr } = await admin.from('leads').insert({
         client_id: client!.id,
-        email,
+        source_id: src?.id,
+        email: s.normalized_email || email,
         first_name,
         last_name: last_name || null,
-        phone_e164: phone || null,
+        phone_e164: s.phone_e164,
         icp_segment,
+        tags: s.tags ?? [],
+        is_scrubbed: s.is_scrubbed,
+        syntax_valid: s.syntax_valid,
+        mx_valid: s.mx_valid,
+        smtp_valid: s.smtp_valid,
+        is_disposable: s.is_disposable,
+        is_duplicate: s.is_duplicate,
+        is_suppressed: s.is_suppressed,
+        scrub_score: s.scrub_score,
+        reject_reason: s.reject_reason,
+        ...scoringInsertFields(s),
         raw: Object.fromEntries(formData.entries()),
+        scrubbed_at: new Date().toISOString(),
       });
 
       if (insertErr) {

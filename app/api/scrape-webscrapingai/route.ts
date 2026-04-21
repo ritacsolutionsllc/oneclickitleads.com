@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
+import type { ExportPolicy } from '@/utils/scoring/tier';
+
+// webscraping.ai fetches HTML we extracted emails/phones from ourselves —
+// public-scraped (tier 4). We never trust these rows enough to bypass the
+// scoring + review gate.
+const WEBSCRAPING_TRUST_TIER = 4;
 
 /**
  * POST /api/scrape-webscrapingai
@@ -75,7 +81,7 @@ export async function POST(req: NextRequest) {
   const supabase = createAdminClient();
   const { data: client } = await supabase
     .from('clients')
-    .select('id')
+    .select('id, export_policy')
     .eq('slug', client_slug)
     .single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
@@ -87,6 +93,7 @@ export async function POST(req: NextRequest) {
       kind: 'scraped',
       label: `webscraping.ai: ${urls.length} url${urls.length > 1 ? 's' : ''}${segment ? ` (${segment})` : ''}`,
       source_url: 'https://api.webscraping.ai/html',
+      trust_tier: WEBSCRAPING_TRUST_TIER,
     })
     .select('id')
     .single();
@@ -128,7 +135,12 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    doEnrich: true,
+    sourceTrustTier: WEBSCRAPING_TRUST_TIER,
+    exportPolicy: (client.export_policy ?? null) as ExportPolicy | null,
+    verifiedBy: 'scrape-webscrapingai',
+  });
   const toInsert = scrubbed.map((s) => ({
     client_id: client.id,
     source_id: src?.id,
@@ -161,6 +173,8 @@ export async function POST(req: NextRequest) {
     with_phone: rows.filter((r) => r.phone).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    pending_review: toInsert.filter((r) => r.review_state === 'pending').length,
+    trust_tier: WEBSCRAPING_TRUST_TIER,
     errors,
     error: error?.message,
   });

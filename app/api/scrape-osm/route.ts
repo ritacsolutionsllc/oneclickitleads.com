@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
+import type { ExportPolicy } from '@/utils/scoring/tier';
+
+// OSM is public-contributor data — richer tags than Google Places in some
+// cities, but still public-scraped, so tier 4.
+const OSM_TRUST_TIER = 4;
 
 /**
  * GET /api/scrape-osm?shop=beauty&city=Los+Angeles&region=CA&country=US&client=chella&segment=salon
@@ -114,7 +119,7 @@ export async function GET(request: Request) {
 
   const supabase = createAdminClient();
   const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', clientSlug).single();
+    .from('clients').select('id, export_policy').eq('slug', clientSlug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
   const { data: src } = await supabase
@@ -124,10 +129,16 @@ export async function GET(request: Request) {
       kind: 'scraped',
       label: `osm: ${osmKey}=${shop} in ${city}, ${region}`,
       source_url: 'https://overpass-api.de/api/interpreter',
+      trust_tier: OSM_TRUST_TIER,
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    doEnrich: true,
+    sourceTrustTier: OSM_TRUST_TIER,
+    exportPolicy: (client.export_policy ?? null) as ExportPolicy | null,
+    verifiedBy: 'scrape-osm',
+  });
 
   const toInsert = scrubbed.map((s) => ({
     client_id: client.id,
@@ -163,6 +174,8 @@ export async function GET(request: Request) {
     with_website: rows.filter((r) => r.source_url).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    pending_review: toInsert.filter((r) => r.review_state === 'pending').length,
+    trust_tier: OSM_TRUST_TIER,
     error: error?.message,
   });
 }

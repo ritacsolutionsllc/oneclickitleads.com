@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scrubEmail } from '@/utils/scrub/email';
+import { scoreLead } from '@/utils/scoring/score';
+import { assignTierWithReason, type ExportPolicy } from '@/utils/scoring/tier';
 
 /**
  * POST /api/harvest-emails
@@ -37,13 +40,16 @@ export async function POST(req: NextRequest) {
 
   const supabase = createAdminClient();
   const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', client_slug).single();
+    .from('clients').select('id, export_policy').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+  const policy = (client.export_policy ?? null) as ExportPolicy | null;
 
   // Leads with a website (in raw->source_url) but no email yet.
   let q = supabase
     .from('leads')
-    .select('id, company, city, region, raw')
+    .select(
+      'id, company, city, region, country, icp_segment, phone_e164, first_name, last_name, title, raw, source_id'
+    )
     .eq('client_id', client.id)
     .is('email', null)
     .not('raw->>source_url', 'is', null)
@@ -67,12 +73,63 @@ export async function POST(req: NextRequest) {
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
       if (hit.email) {
+        // Re-score the lead with the newly-discovered email so it moves out
+        // of 'hold' if it now meets the policy floor. We look up the
+        // source's trust_tier (tier 4 default for public scrapes) and feed
+        // it back into the scoring engine — otherwise harvested leads would
+        // silently keep a stale export_tier.
+        const verification = await scrubEmail(hit.email);
+        const trustTier = await lookupTrustTier(supabase, lead.source_id);
+        const scores = scoreLead({
+          syntax_valid: verification.syntax_valid,
+          mx_valid: verification.mx_valid,
+          smtp_valid: verification.smtp_valid,
+          is_disposable: verification.is_disposable,
+          email: verification.normalized,
+          phone_e164: lead.phone_e164 ?? null,
+          first_name: lead.first_name ?? null,
+          last_name: lead.last_name ?? null,
+          company: lead.company ?? null,
+          title: lead.title ?? null,
+          city: lead.city ?? null,
+          region: lead.region ?? null,
+          country: lead.country ?? null,
+          icp_segment: lead.icp_segment ?? null,
+          source_trust_tier: trustTier,
+          verified_at: null,
+        });
+        const isScrubbed =
+          verification.syntax_valid && verification.mx_valid && !verification.is_disposable;
+        const tier = assignTierWithReason({
+          composite_score: scores.composite_score,
+          is_scrubbed: isScrubbed,
+          policy,
+        });
+        const reason_codes = Array.from(
+          new Set<string>([...scores.reason_codes, ...tier.reason_codes, 'email_harvested'])
+        );
         await supabase
           .from('leads')
           .update({
-            email: hit.email,
-            syntax_valid: true,
-            reject_reason: null,
+            email: verification.normalized || hit.email,
+            syntax_valid: verification.syntax_valid,
+            mx_valid: verification.mx_valid,
+            smtp_valid: verification.smtp_valid,
+            is_disposable: verification.is_disposable,
+            is_scrubbed: isScrubbed,
+            scrub_score: verification.score,
+            reject_reason: verification.reject_reason ?? null,
+            identity_score: scores.identity_score,
+            icp_fit_score: scores.icp_fit_score,
+            completeness_score: scores.completeness_score,
+            freshness_score: scores.freshness_score,
+            intent_score: scores.intent_score,
+            source_confidence: scores.source_confidence,
+            export_tier: tier.tier,
+            review_state: tier.review_state,
+            reason_codes,
+            verified_at: new Date().toISOString(),
+            verified_by: 'harvest-emails',
             raw: { ...(lead.raw as object), harvested_from: hit.found_on },
           })
           .eq('id', lead.id);
@@ -96,6 +153,23 @@ interface HarvestResult {
   email?: string;
   found_on?: string;
   candidates?: string[];
+}
+
+type AdminClient = ReturnType<typeof createAdminClient>;
+
+async function lookupTrustTier(
+  supabase: AdminClient,
+  sourceId: string | null | undefined
+): Promise<number> {
+  if (!sourceId) return 4; // no source row → assume public-scraped
+  const { data } = await supabase
+    .from('sources')
+    .select('trust_tier')
+    .eq('id', sourceId)
+    .maybeSingle();
+  const tier = Number(data?.trust_tier);
+  if (!Number.isFinite(tier)) return 4;
+  return Math.min(5, Math.max(1, tier));
 }
 
 async function harvestSite(siteUrl: string): Promise<Partial<HarvestResult>> {

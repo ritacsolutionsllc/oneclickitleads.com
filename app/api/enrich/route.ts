@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scrubEmail } from '@/utils/scrub/email';
+import { scoreLead } from '@/utils/scoring/score';
+import { assignTierWithReason, type ExportPolicy } from '@/utils/scoring/tier';
 
 /**
  * POST /api/enrich
@@ -8,7 +11,13 @@ import { createAdminClient } from '@/utils/supabase/server';
  * Finds leads in the client's DB that have a website but no email, calls
  * Hunter.io domain-search, and writes the top verified email back. Runs
  * nightly via pg_cron or on-demand from the dashboard.
+ *
+ * Enrichment-sourced emails count as tier 3 (api-verified but not
+ * first-party), so they still sit below Shopify/Klaviyo (tier 1) and form
+ * submissions (tier 2) on the trust ladder.
  */
+const ENRICH_TRUST_TIER = 3;
+
 export async function POST(req: NextRequest) {
   const secret = req.headers.get('x-ingest-secret');
   if (secret !== process.env.INGEST_SECRET)
@@ -20,12 +29,13 @@ export async function POST(req: NextRequest) {
 
   const supabase = createAdminClient();
   const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', client_slug).single();
+    .from('clients').select('id, export_policy').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+  const policy = (client.export_policy ?? null) as ExportPolicy | null;
 
   const { data: targets } = await supabase
     .from('leads')
-    .select('id, website')
+    .select('id, website, phone_e164, first_name, last_name, title, company, city, region, country, icp_segment')
     .eq('client_id', client.id)
     .is('email', null)
     .not('website', 'is', null)
@@ -44,13 +54,65 @@ export async function POST(req: NextRequest) {
     };
     const top = data?.emails?.[0];
     if (!top?.value || (top.confidence ?? 0) < 70) continue;
+
+    const verification = await scrubEmail(top.value);
+    const first_name = top.first_name ?? t.first_name ?? null;
+    const last_name = top.last_name ?? t.last_name ?? null;
+    const title = top.position ?? t.title ?? null;
+    const scores = scoreLead({
+      syntax_valid: verification.syntax_valid,
+      mx_valid: verification.mx_valid,
+      smtp_valid: verification.smtp_valid,
+      is_disposable: verification.is_disposable,
+      email: verification.normalized,
+      phone_e164: t.phone_e164 ?? null,
+      first_name,
+      last_name,
+      company: t.company ?? null,
+      title,
+      city: t.city ?? null,
+      region: t.region ?? null,
+      country: t.country ?? null,
+      icp_segment: t.icp_segment ?? null,
+      source_trust_tier: ENRICH_TRUST_TIER,
+      verified_at: null,
+    });
+    const isScrubbed =
+      verification.syntax_valid && verification.mx_valid && !verification.is_disposable;
+    const tier = assignTierWithReason({
+      composite_score: scores.composite_score,
+      is_scrubbed: isScrubbed,
+      policy,
+    });
+    const reason_codes = Array.from(
+      new Set<string>([...scores.reason_codes, ...tier.reason_codes, 'enriched_hunter'])
+    );
+
     await supabase
       .from('leads')
       .update({
-        email: top.value,
-        first_name: top.first_name ?? null,
-        last_name: top.last_name ?? null,
-        title: top.position ?? null,
+        email: verification.normalized || top.value,
+        first_name,
+        last_name,
+        title,
+        syntax_valid: verification.syntax_valid,
+        mx_valid: verification.mx_valid,
+        smtp_valid: verification.smtp_valid,
+        is_disposable: verification.is_disposable,
+        is_scrubbed: isScrubbed,
+        scrub_score: verification.score,
+        reject_reason: verification.reject_reason ?? null,
+        identity_score: scores.identity_score,
+        icp_fit_score: scores.icp_fit_score,
+        completeness_score: scores.completeness_score,
+        freshness_score: scores.freshness_score,
+        intent_score: scores.intent_score,
+        source_confidence: scores.source_confidence,
+        export_tier: tier.tier,
+        review_state: tier.review_state,
+        reason_codes,
+        verified_at: new Date().toISOString(),
+        verified_by: 'enrich:hunter',
       })
       .eq('id', t.id);
     updated++;

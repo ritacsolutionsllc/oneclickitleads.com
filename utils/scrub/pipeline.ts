@@ -7,7 +7,12 @@ import { scrubEmail, normalizeEmail } from './email';
 import { normalizePhone } from './phone';
 import { enrich } from './enrich';
 import { scoreLead, type ScoreOutput } from '../scoring/score';
-import { assignTier, type ExportPolicy, type ExportTier } from '../scoring/tier';
+import {
+  assignTierWithReason,
+  type ExportPolicy,
+  type ExportTier,
+  type ReviewState,
+} from '../scoring/tier';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface RawLead {
@@ -26,7 +31,7 @@ export interface RawLead {
   [k: string]: unknown;
 }
 
-export interface ScrubbedLead extends RawLead, ScoreOutput {
+export interface ScrubbedLead extends RawLead, Omit<ScoreOutput, 'reason_codes'> {
   normalized_email: string;
   phone_e164: string | null;
   syntax_valid: boolean;
@@ -39,8 +44,11 @@ export interface ScrubbedLead extends RawLead, ScoreOutput {
   reject_reason?: string;
   is_scrubbed: boolean;
   export_tier: ExportTier;
+  review_state: ReviewState;
   verified_at: string;
   verified_by: string;
+  /** Combined score + tier reason codes; persisted on `leads.reason_codes`. */
+  reason_codes: string[];
 }
 
 export interface ScrubOptions {
@@ -51,6 +59,8 @@ export interface ScrubOptions {
   clientIcpTargets?: string[];
   /** Per-client export_policy, used to apply min_composite_score. */
   exportPolicy?: ExportPolicy | null;
+  /** Label identifying who ran this scrub — stored on verified_by. */
+  verifiedBy?: string;
 }
 
 export async function scrubBatch(
@@ -60,6 +70,7 @@ export async function scrubBatch(
   opts: ScrubOptions = { doEnrich: true }
 ): Promise<ScrubbedLead[]> {
   const sourceTrustTier = opts.sourceTrustTier ?? 4;
+  const verifiedBy = opts.verifiedBy ?? 'scrub-pipeline';
 
   // 1. pull suppressions once
   const { data: sup } = await supabase
@@ -154,13 +165,18 @@ export async function scrubBatch(
       source_trust_tier: sourceTrustTier,
     });
 
-    const export_tier = assignTier({
+    const tierResult = assignTierWithReason({
       composite_score: scores.composite_score,
       is_suppressed: !!isSuppressed,
       is_duplicate: isDuplicate,
       is_scrubbed: isScrubbed,
       policy: opts.exportPolicy ?? null,
     });
+
+    // Merge score reasons with tier reasons — deduped, stable order.
+    const reason_codes = Array.from(
+      new Set<string>([...scores.reason_codes, ...tierResult.reason_codes])
+    );
 
     results.push({
       ...merged,
@@ -178,9 +194,11 @@ export async function scrubBatch(
         (isDuplicate ? 'duplicate' : isSuppressed ? 'suppressed' : undefined),
       is_scrubbed: isScrubbed,
       ...scores,
-      export_tier,
+      reason_codes,
+      export_tier: tierResult.tier,
+      review_state: tierResult.review_state,
       verified_at: new Date().toISOString(),
-      verified_by: 'scrub-pipeline',
+      verified_by: verifiedBy,
     });
   }
 
@@ -201,6 +219,8 @@ export function scoringInsertFields(s: ScrubbedLead) {
     intent_score: s.intent_score,
     source_confidence: s.source_confidence,
     export_tier: s.export_tier,
+    review_state: s.review_state,
+    reason_codes: s.reason_codes,
     verified_at: s.verified_at,
     verified_by: s.verified_by,
   };

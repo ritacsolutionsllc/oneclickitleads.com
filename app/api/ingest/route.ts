@@ -1,16 +1,37 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
+import type { ExportPolicy } from '@/utils/scoring/tier';
 
 /**
  * POST /api/ingest
- * Body: { client_slug: string, source: { kind, label, source_url? }, rows: RawLead[] }
+ * Body: {
+ *   client_slug: string,
+ *   source: { kind, label, source_url?, trust_tier? },
+ *   rows: RawLead[]
+ * }
  *
  * Server-only (admin client). Call from:
- *   - Apollo/Common Room import jobs
- *   - ScrapingBee/BrightData harvesters
- *   - Uploaded CSVs from the dashboard
+ *   - Apollo/Common Room import jobs (trust_tier 2)
+ *   - ScrapingBee/BrightData harvesters (trust_tier 4)
+ *   - Uploaded CSVs from the dashboard (caller decides)
+ *
+ * Every row is routed through the scrub pipeline — scoring, export_tier and
+ * review_state are assigned there, not by callers. Public/scraped callers
+ * must pass trust_tier >= 4 so rows land below the export floor unless they
+ * pass independent verification.
  */
+
+// 1 = first-party opt-in, 5 = social-speculative. Clamped to this range so a
+// bad caller can't promote a scraped batch to tier 1 by accident.
+const TRUST_TIER_DEFAULT = 4;
+
+function clampTrustTier(tier: unknown): number {
+  const n = Number(tier);
+  if (!Number.isFinite(n)) return TRUST_TIER_DEFAULT;
+  return Math.min(5, Math.max(1, Math.round(n)));
+}
+
 export async function POST(req: NextRequest) {
   const secret = req.headers.get('x-ingest-secret');
   if (secret !== process.env.INGEST_SECRET) {
@@ -35,9 +56,10 @@ export async function POST(req: NextRequest) {
   const supabase = createAdminClient();
 
   const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', client_slug).single();
+    .from('clients').select('id, export_policy').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
+  const trustTier = clampTrustTier(source?.trust_tier);
   const { data: srcRow } = await supabase
     .from('sources')
     .insert({
@@ -45,10 +67,16 @@ export async function POST(req: NextRequest) {
       kind: source?.kind ?? 'api',
       label: source?.label ?? null,
       source_url: source?.source_url ?? null,
+      trust_tier: trustTier,
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    doEnrich: true,
+    sourceTrustTier: trustTier,
+    exportPolicy: (client.export_policy ?? null) as ExportPolicy | null,
+    verifiedBy: `ingest:${source?.kind ?? 'api'}`,
+  });
 
   const inserts = scrubbed.map((s) => ({
     client_id: client.id,
@@ -86,5 +114,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     ingested: inserts.length,
     clean: inserts.filter((r) => r.is_scrubbed).length,
+    pending_review: inserts.filter((r) => r.review_state === 'pending').length,
+    trust_tier: trustTier,
   });
 }

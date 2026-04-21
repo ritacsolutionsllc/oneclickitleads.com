@@ -15,6 +15,9 @@ export type ExportTier =
 
 export type TierAction = 'allow' | 'manual' | 'block';
 
+/** Operator decision stored on `leads.review_state`. */
+export type ReviewState = 'auto' | 'pending' | 'approved' | 'rejected' | 'needs_reverify';
+
 export interface ExportPolicy {
   premium?: TierAction;
   standard?: TierAction;
@@ -44,25 +47,79 @@ export interface TierInput {
   policy?: ExportPolicy | null;
 }
 
+export interface TierResult {
+  tier: ExportTier;
+  review_state: ReviewState;
+  reason_codes: string[];
+}
+
 /**
- * Assign a tier to a lead. Suppressed/duplicate leads are forced to `discard`
- * regardless of score. Unscrubbed leads land in `hold` so they don't export
- * until the scrub pipeline has run.
+ * Backwards-compatible helper: returns just the tier (what the DB column
+ * stores). New callers should prefer `assignTierWithReason` so they can
+ * persist the review_state + reason codes.
  */
 export function assignTier(input: TierInput): ExportTier {
-  if (input.is_suppressed || input.is_duplicate) return 'discard';
-  if (input.is_scrubbed === false) return 'hold';
+  return assignTierWithReason(input).tier;
+}
+
+/**
+ * Assign a tier + initial review_state + tier-level reason codes.
+ *
+ * Rules:
+ *  - Suppressed/duplicate → `discard` + `rejected` (never ships).
+ *  - Unscrubbed → `hold` (the scrub pipeline runs next; we don't auto-ship).
+ *  - Below the client's `min_composite_score` → forced `discard`.
+ *  - Score-based bands: 80+ premium, 65+ standard, 50+ prospecting, 35+
+ *    review, 20+ hold, else discard.
+ *  - `review` tier starts life as `pending` so the review queue picks it up.
+ *  - Every other tier starts as `auto` (tier is authoritative).
+ */
+export function assignTierWithReason(input: TierInput): TierResult {
+  const reasons: string[] = [];
+
+  if (input.is_suppressed) {
+    reasons.push('tier_suppressed');
+    return { tier: 'discard', review_state: 'rejected', reason_codes: reasons };
+  }
+  if (input.is_duplicate) {
+    reasons.push('tier_duplicate');
+    return { tier: 'discard', review_state: 'rejected', reason_codes: reasons };
+  }
+  if (input.is_scrubbed === false) {
+    reasons.push('tier_unscrubbed');
+    return { tier: 'hold', review_state: 'auto', reason_codes: reasons };
+  }
 
   const s = input.composite_score;
   const floor = input.policy?.min_composite_score ?? DEFAULT_EXPORT_POLICY.min_composite_score;
 
-  if (!Number.isFinite(s) || s < Math.min(20, floor)) return 'discard';
-  if (s >= 80) return 'premium';
-  if (s >= 65) return 'standard';
-  if (s >= 50) return 'prospecting';
-  if (s >= 35) return 'review';
-  if (s >= 20) return 'hold';
-  return 'discard';
+  if (!Number.isFinite(s)) {
+    reasons.push('tier_missing_score');
+    return { tier: 'discard', review_state: 'rejected', reason_codes: reasons };
+  }
+
+  // Below the policy floor is treated as discard regardless of the score band.
+  if (s < Math.min(20, floor)) {
+    reasons.push('tier_below_policy_floor');
+    return { tier: 'discard', review_state: 'rejected', reason_codes: reasons };
+  }
+  if (s < floor && s >= 20) {
+    // Score would otherwise land in hold/review, but policy floor overrides.
+    reasons.push('tier_below_policy_floor');
+    return { tier: 'hold', review_state: 'auto', reason_codes: reasons };
+  }
+
+  let tier: ExportTier;
+  if (s >= 80) tier = 'premium';
+  else if (s >= 65) tier = 'standard';
+  else if (s >= 50) tier = 'prospecting';
+  else if (s >= 35) tier = 'review';
+  else if (s >= 20) tier = 'hold';
+  else tier = 'discard';
+
+  reasons.push(`tier_${tier}`);
+  const review_state: ReviewState = tier === 'review' ? 'pending' : 'auto';
+  return { tier, review_state, reason_codes: reasons };
 }
 
 /** Which tiers a client's policy allows to export automatically. */
@@ -70,6 +127,13 @@ export function allowedTiers(policy?: ExportPolicy | null): ExportTier[] {
   const p = { ...DEFAULT_EXPORT_POLICY, ...(policy ?? {}) };
   const tiers: ExportTier[] = ['premium', 'standard', 'prospecting', 'review', 'hold', 'discard'];
   return tiers.filter((t) => p[t] === 'allow');
+}
+
+/** Which tiers a client's policy sends to manual review. */
+export function manualTiers(policy?: ExportPolicy | null): ExportTier[] {
+  const p = { ...DEFAULT_EXPORT_POLICY, ...(policy ?? {}) };
+  const tiers: ExportTier[] = ['premium', 'standard', 'prospecting', 'review', 'hold', 'discard'];
+  return tiers.filter((t) => p[t] === 'manual');
 }
 
 /** Whether a given tier can export under the policy. `manual` and `block` both

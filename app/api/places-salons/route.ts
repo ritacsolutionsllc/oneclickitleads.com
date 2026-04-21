@@ -1,6 +1,12 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
+import type { ExportPolicy } from '@/utils/scoring/tier';
+
+// Google Places = public directory data. Tier 4 (public-scraped) so records
+// never skip the quality gate; contact info must still pass scrub + scoring
+// to escape 'hold'.
+const GOOGLE_PLACES_TRUST_TIER = 4;
 
 /**
  * GET /api/places-salons?query=eyebrow+salon+Los+Angeles+CA&client=chella&segment=salon
@@ -106,7 +112,7 @@ export async function GET(request: Request) {
 
   const supabase = createAdminClient();
   const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', clientSlug).single();
+    .from('clients').select('id, export_policy').eq('slug', clientSlug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
   const { data: src } = await supabase
@@ -116,10 +122,16 @@ export async function GET(request: Request) {
       kind: 'scraped',
       label: `google_places: ${query}`,
       source_url: 'https://places.googleapis.com/v1/places:searchText',
+      trust_tier: GOOGLE_PLACES_TRUST_TIER,
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, client.id, rows, {
+    doEnrich: true,
+    sourceTrustTier: GOOGLE_PLACES_TRUST_TIER,
+    exportPolicy: (client.export_policy ?? null) as ExportPolicy | null,
+    verifiedBy: 'places-salons',
+  });
 
   const toInsert = scrubbed.map((s) => ({
     client_id: client.id,
@@ -154,6 +166,8 @@ export async function GET(request: Request) {
     with_website: rows.filter((r) => r.source_url).length,
     ingested: toInsert.length,
     clean: toInsert.filter((r) => r.is_scrubbed).length,
+    pending_review: toInsert.filter((r) => r.review_state === 'pending').length,
+    trust_tier: GOOGLE_PLACES_TRUST_TIER,
     error: error?.message,
   });
 }

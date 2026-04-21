@@ -90,7 +90,7 @@ export async function GET(req: NextRequest) {
   let q = supabase
     .from('leads')
     .select(
-      'email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, composite_score, export_tier, scrub_score'
+      'email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, composite_score, export_tier, review_state, scrub_score'
     )
     .eq('client_id', client.id)
     .eq('is_scrubbed', true)
@@ -103,7 +103,14 @@ export async function GET(req: NextRequest) {
   const { data: leads, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const rows = leads ?? [];
+  // Review-tier leads only ship when an operator has explicitly approved
+  // them; rejected leads never ship regardless of tier. `auto` and
+  // `approved` are the only states that flow through.
+  const rows = (leads ?? []).filter((l) => {
+    if (l.review_state === 'rejected') return false;
+    if (l.export_tier === 'review') return l.review_state === 'approved';
+    return true;
+  });
 
   await supabase.from('exports').insert({
     client_id: client.id,
