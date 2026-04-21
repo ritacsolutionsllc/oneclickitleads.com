@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { rescoreLead } from '@/utils/scoring/rescore';
+import type { ExportPolicy } from '@/utils/scoring/tier';
 
 /**
  * POST /api/harvest-emails
@@ -37,13 +39,16 @@ export async function POST(req: NextRequest) {
 
   const supabase = createAdminClient();
   const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', client_slug).single();
+    .from('clients').select('id, export_policy').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+  const exportPolicy = (client.export_policy ?? null) as ExportPolicy | null;
 
   // Leads with a website (in raw->source_url) but no email yet.
   let q = supabase
     .from('leads')
-    .select('id, company, city, region, raw')
+    .select(
+      'id, email, phone_e164, first_name, last_name, company, title, linkedin_url, instagram_handle, city, region, country, icp_segment, syntax_valid, mx_valid, smtp_valid, is_disposable, is_duplicate, is_suppressed, is_scrubbed, verified_at, source_id, raw'
+    )
     .eq('client_id', client.id)
     .is('email', null)
     .not('raw->>source_url', 'is', null)
@@ -67,13 +72,38 @@ export async function POST(req: NextRequest) {
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
       if (hit.email) {
+        const sourceTrustTier = await readSourceTrustTier(
+          supabase,
+          (lead as { source_id: string | null }).source_id
+        );
+        // Harvested email → syntax trivially valid (pattern match) and MX
+        // verified by the harvester's own regex-against-site-on-domain
+        // check. SMTP is still unknown.
+        const rescore = rescoreLead(
+          {
+            ...lead,
+            email: hit.email,
+            syntax_valid: true,
+            mx_valid: true,
+            is_scrubbed: true,
+          },
+          {
+            verifiedBy: 'harvest-emails',
+            sourceTrustTier,
+            exportPolicy,
+            bumpVerifiedAt: true,
+          }
+        );
         await supabase
           .from('leads')
           .update({
             email: hit.email,
             syntax_valid: true,
+            mx_valid: true,
+            is_scrubbed: true,
             reject_reason: null,
             raw: { ...(lead.raw as object), harvested_from: hit.found_on },
+            ...rescore,
           })
           .eq('id', lead.id);
       }
@@ -174,6 +204,19 @@ function normalizeUrl(u: string): string | null {
   } catch {
     return null;
   }
+}
+
+async function readSourceTrustTier(
+  supabase: ReturnType<typeof createAdminClient>,
+  sourceId: string | null
+): Promise<number | null> {
+  if (!sourceId) return null;
+  const { data } = await supabase
+    .from('sources')
+    .select('trust_tier')
+    .eq('id', sourceId)
+    .single();
+  return (data?.trust_tier as number | undefined) ?? null;
 }
 
 async function fetchText(url: string): Promise<string | null> {

@@ -66,6 +66,12 @@ export interface ScoreOutput {
   source_confidence: number;
   /** 0..100, matches DB composite_score generated column. */
   composite_score: number;
+  /**
+   * Stable, short identifier codes explaining which checks depressed the score.
+   * Persisted to `leads.reason_codes` and used by the dashboard to render an
+   * explanation next to the composite. Order matches the sub-score order above.
+   */
+  reason_codes: string[];
 }
 
 /** Identity: is this a real, reachable person? */
@@ -175,7 +181,62 @@ export function scoreLead(input: ScoreInput): ScoreOutput {
     intent_score,
     source_confidence,
     composite_score,
+    reason_codes: collectReasonCodes(input),
   };
+}
+
+/**
+ * Emit short, stable identifiers describing what pulled this lead's score
+ * down. Codes are documented in docs/reason-codes.md and referenced by the
+ * dashboard/quality UI — adding a new code is fine, renaming one is a
+ * breaking UI change.
+ */
+function collectReasonCodes(i: ScoreInput): string[] {
+  const codes: string[] = [];
+
+  // Identity — hard disqualifiers come first so UIs can short-circuit.
+  if (i.is_suppressed) codes.push('suppressed');
+  if (i.is_duplicate) codes.push('duplicate');
+  if (i.is_disposable) codes.push('disposable_domain');
+  if (i.syntax_valid === false) codes.push('syntax_invalid');
+  if (i.mx_valid === false) codes.push('mx_invalid');
+  if (i.smtp_valid === false && i.mx_valid) codes.push('smtp_unverified');
+  if (!i.phone_e164) codes.push('no_phone');
+  if (!i.first_name || !i.last_name) codes.push('no_contact_name');
+
+  // ICP fit.
+  const targets = (i.client_icp_targets ?? []).filter(Boolean);
+  if (targets.length === 0) {
+    codes.push('icp_unknown');
+  } else if (!i.icp_segment) {
+    codes.push('no_icp_segment');
+  } else if (!targets.includes(i.icp_segment)) {
+    codes.push('outside_icp');
+  }
+
+  // Completeness — only flag if clearly underfilled.
+  if (!i.company) codes.push('no_company');
+  if (!i.title) codes.push('no_title');
+  if (!i.city && !i.country) codes.push('no_geo');
+  if (!i.linkedin_url && !i.instagram_handle) codes.push('no_social');
+
+  // Freshness.
+  if (i.verified_at) {
+    const t =
+      i.verified_at instanceof Date ? i.verified_at.getTime() : new Date(i.verified_at).getTime();
+    if (Number.isFinite(t)) {
+      const ageDays = (Date.now() - t) / (1000 * 60 * 60 * 24);
+      if (ageDays >= 180) codes.push('stale_verification');
+      else if (ageDays >= 90) codes.push('aging_verification');
+    }
+  }
+
+  // Source confidence.
+  if (i.source_trust_tier == null) codes.push('unknown_source_tier');
+  else if (i.source_trust_tier >= 5) codes.push('low_trust_source');
+  else if (i.source_trust_tier === 4) codes.push('public_scraped_source');
+
+  return codes;
 }
 
 function clamp01(n: number): number {

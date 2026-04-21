@@ -203,6 +203,8 @@ export function scoringInsertFields(s: ScrubbedLead) {
     export_tier: s.export_tier,
     verified_at: s.verified_at,
     verified_by: s.verified_by,
+    reason_codes: s.reason_codes,
+    last_rescored_at: s.verified_at,
   };
 }
 
