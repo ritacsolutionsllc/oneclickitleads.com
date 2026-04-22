@@ -1,7 +1,15 @@
 import { createClient } from '@/utils/supabase/server';
+import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
 
 type SearchParams = { client?: string; error?: string; ok?: string };
+
+// Bump whenever the consent checkbox copy below changes. The previous
+// string stays tied to leads that consented to *that* version via
+// leads.consent_text_version, so proofs remain attributable.
+const CONSENT_TEXT_VERSION = '2026-04-22a';
+const CONSENT_TEXT =
+  'I agree to receive marketing emails and understand I can unsubscribe at any time.';
 
 export default async function SubmitLead({
   searchParams,
@@ -24,11 +32,32 @@ export default async function SubmitLead({
     const icp_segment =
       ((formData.get('icp_segment') as string) || '').trim() || 'b2c_beauty';
 
+    const consented = formData.get('consent') === 'on';
     if (!email || !first_name) {
       redirect(
         `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('Please enter your first name and email.')}`,
       );
     }
+    if (!consented) {
+      redirect(
+        `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('You must agree to receive emails before submitting.')}`,
+      );
+    }
+
+    // Capture proof-of-consent headers server-side. The browser can't
+    // forge these without also bypassing the form, and `x-forwarded-for`
+    // on Vercel is set by the edge — not trusted for auth, but accurate
+    // enough for a compliance audit trail.
+    const h = await headers();
+    const consent_ip =
+      (h.get('x-forwarded-for') ?? '').split(',')[0]?.trim() ||
+      h.get('x-real-ip') ||
+      null;
+    const consent_ua = h.get('user-agent')?.slice(0, 500) ?? null;
+    const consent_ts = new Date().toISOString();
+    const consent_source_url =
+      h.get('referer') ??
+      `${process.env.NEXT_PUBLIC_APP_URL ?? ''}/submit-lead?client=${encodeURIComponent(slug)}`;
 
     try {
       const supabase = await createClient();
@@ -52,21 +81,50 @@ export default async function SubmitLead({
         );
       }
 
-      const { error: insertErr } = await supabase.from('leads').insert({
-        client_id: client!.id,
-        email,
-        first_name,
-        last_name: last_name || null,
-        phone_e164: phone || null,
-        icp_segment,
-        raw: Object.fromEntries(formData.entries()),
-      });
+      const { data: inserted, error: insertErr } = await supabase
+        .from('leads')
+        .insert({
+          client_id: client!.id,
+          email,
+          first_name,
+          last_name: last_name || null,
+          phone_e164: phone || null,
+          icp_segment,
+          consent_ts,
+          consent_ip,
+          consent_ua,
+          consent_text_version: CONSENT_TEXT_VERSION,
+          consent_source_url,
+          raw: {
+            ...Object.fromEntries(formData.entries()),
+            consent_text: CONSENT_TEXT,
+          },
+        })
+        .select('id')
+        .single();
 
       if (insertErr) {
         console.error('[submit-lead] insert failed:', insertErr);
         redirect(
           `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('We could not save your signup. Please try again.')}`,
         );
+      }
+
+      // Immutable audit row so the proof URL has something to render even
+      // if the lead row is later deleted via DSAR.
+      if (inserted?.id) {
+        await supabase.from('lead_events').insert({
+          lead_id: inserted.id,
+          kind: 'consented',
+          detail: {
+            ts: consent_ts,
+            ip: consent_ip,
+            ua: consent_ua,
+            text_version: CONSENT_TEXT_VERSION,
+            text: CONSENT_TEXT,
+            source_url: consent_source_url,
+          },
+        });
       }
     } catch (err) {
       // `redirect()` throws internally — let it through.
@@ -177,13 +235,19 @@ export default async function SubmitLead({
 
         <label className="flex items-start gap-2 text-xs text-neutral-600">
           <input required type="checkbox" name="consent" className="mt-1" />
-          I agree to receive marketing emails and understand I can unsubscribe
-          at any time. See the{' '}
-          <a className="underline" href="/privacy">
-            privacy policy
-          </a>
-          .
+          <span>
+            {CONSENT_TEXT} See the{' '}
+            <a className="underline" href="/privacy">
+              privacy policy
+            </a>
+            .
+          </span>
         </label>
+        <input
+          type="hidden"
+          name="consent_text_version"
+          defaultValue={CONSENT_TEXT_VERSION}
+        />
 
         <button className="w-full rounded-full bg-emerald-600 text-white py-3 font-medium hover:bg-emerald-700">
           Submit
