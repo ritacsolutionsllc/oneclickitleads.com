@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { rescoreLead } from '@/utils/scoring/rescore';
+import { scrubEmail } from '@/utils/scrub/email';
 
 /**
  * POST /api/harvest-emails
@@ -67,15 +69,31 @@ export async function POST(req: NextRequest) {
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
       if (hit.email) {
+        // Re-run the email pipeline so MX/SMTP/disposable get re-checked
+        // before we rescore. A harvested email with a dead MX shouldn't
+        // suddenly bump a lead into the export pool.
+        const emailResult = await scrubEmail(hit.email);
+        const isClean =
+          emailResult.syntax_valid && emailResult.mx_valid && !emailResult.is_disposable;
         await supabase
           .from('leads')
           .update({
-            email: hit.email,
-            syntax_valid: true,
-            reject_reason: null,
+            email: emailResult.normalized || hit.email,
+            syntax_valid: emailResult.syntax_valid,
+            mx_valid: emailResult.mx_valid,
+            smtp_valid: emailResult.smtp_valid,
+            is_disposable: emailResult.is_disposable,
+            scrub_score: emailResult.score,
+            reject_reason: emailResult.reject_reason ?? null,
+            is_scrubbed: isClean,
             raw: { ...(lead.raw as object), harvested_from: hit.found_on },
           })
           .eq('id', lead.id);
+        try {
+          await rescoreLead(supabase, lead.id, { verifiedBy: 'harvest-emails' });
+        } catch (e) {
+          console.error('[harvest-emails] rescore failed', lead.id, e);
+        }
       }
     }
   }

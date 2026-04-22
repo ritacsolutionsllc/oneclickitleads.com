@@ -78,3 +78,51 @@ export function canAutoExport(tier: ExportTier, policy?: ExportPolicy | null): b
   const p = { ...DEFAULT_EXPORT_POLICY, ...(policy ?? {}) };
   return p[tier] === 'allow';
 }
+
+export type ReviewState =
+  | 'auto_approved'
+  | 'needs_review'
+  | 'approved'
+  | 'rejected'
+  | 'on_hold'
+  | 'discarded';
+
+export interface ReviewStateInput {
+  tier: ExportTier;
+  is_suppressed?: boolean;
+  is_duplicate?: boolean;
+  is_scrubbed?: boolean;
+  policy?: ExportPolicy | null;
+}
+
+/**
+ * Default the review_state for a freshly scored lead. Operator decisions
+ * mutate this later; we never overwrite an `approved` or `rejected` row
+ * automatically.
+ *
+ *   suppressed/duplicate         → discarded (terminal)
+ *   tier policy = 'allow'        → auto_approved
+ *   tier policy = 'manual'       → needs_review
+ *   tier policy = 'block'        → on_hold
+ */
+export function defaultReviewState(input: ReviewStateInput): ReviewState {
+  if (input.is_suppressed || input.is_duplicate) return 'discarded';
+  if (input.tier === 'discard') return 'discarded';
+  const action = policyActionFor(input.tier, input.policy);
+  switch (action) {
+    case 'allow':
+      return 'auto_approved';
+    case 'manual':
+      return 'needs_review';
+    case 'block':
+      return 'on_hold';
+  }
+}
+
+export function policyActionFor(
+  tier: ExportTier,
+  policy?: ExportPolicy | null
+): TierAction {
+  const p = { ...DEFAULT_EXPORT_POLICY, ...(policy ?? {}) };
+  return p[tier];
+}

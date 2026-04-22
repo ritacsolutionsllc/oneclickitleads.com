@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { allowedTiers, type ExportPolicy, type ExportTier } from '@/utils/scoring/tier';
 
 /**
  * POST /api/push/smartly
@@ -8,14 +9,17 @@ import { createAdminClient } from '@/utils/supabase/server';
  *     audience_name?: string,
  *     audience_id?: string,       // update an existing smartly Custom Audience
  *     segment?: string,           // icp_segment filter: 'b2c_beauty' | 'salon' | 'influencer' | 'retailer'
- *     min_score?: number          // default 60 (MX-valid minimum)
+ *     min_score?: number,         // composite_score floor (default 60). Always
+ *                                 // upper-bounded by client.export_policy.min_composite_score.
+ *     tier?: ExportTier           // optional: restrict to a single tier (must be 'allow' in policy)
  *   }
  *
  * Flow:
- *   1. Pull scrubbed leads from Supabase for this client, filtered by ICP + score.
- *   2. SHA-256 hash emails + E.164 phones (Custom Audience requirement).
- *   3. POST to smartly.io Custom Audience API.
- *   4. Record row in `exports` for reconciliation + billing.
+ *   1. Resolve the client's export_policy → which tiers are allowed to ship.
+ *   2. Pull leads where export_tier ∈ allowed and composite_score >= floor.
+ *   3. SHA-256 hash emails + E.164 phones (Custom Audience requirement).
+ *   4. POST to smartly.io Custom Audience API.
+ *   5. Record row in `exports` for reconciliation + billing.
  *
  * smartly.io API:
  *   Base: https://api.smartly.io/api/v3
@@ -31,6 +35,15 @@ import { createAdminClient } from '@/utils/supabase/server';
 const SMARTLY_BASE           = process.env.SMARTLY_API_BASE || 'https://api.smartly.io/api/v3';
 const SMARTLY_AUDIENCE_PATH  = process.env.SMARTLY_AUDIENCE_PATH || '/custom_audiences';
 
+const VALID_TIERS: ExportTier[] = [
+  'premium',
+  'standard',
+  'prospecting',
+  'review',
+  'hold',
+  'discard',
+];
+
 export async function POST(req: NextRequest) {
   const secret = req.headers.get('x-ingest-secret');
   if (secret !== process.env.INGEST_SECRET)
@@ -42,6 +55,7 @@ export async function POST(req: NextRequest) {
     audience_id,
     segment,
     min_score = 60,
+    tier: tierFilter,
   } = await req.json();
 
   const token   = process.env.SMARTLY_API_TOKEN;
@@ -49,24 +63,55 @@ export async function POST(req: NextRequest) {
   if (!token || !account)
     return NextResponse.json({ error: 'SMARTLY_API_TOKEN / SMARTLY_ACCOUNT_ID missing' }, { status: 500 });
 
+  if (tierFilter && !VALID_TIERS.includes(tierFilter as ExportTier)) {
+    return NextResponse.json(
+      { error: `tier must be one of ${VALID_TIERS.join(', ')}` },
+      { status: 400 }
+    );
+  }
+
   const supabase = createAdminClient();
   const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', client_slug).single();
+    .from('clients').select('id, export_policy').eq('slug', client_slug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
-  // Build the query
+  const policy = (client.export_policy ?? null) as ExportPolicy | null;
+  const autoAllowed = allowedTiers(policy);
+  const tiersToPush: ExportTier[] =
+    tierFilter && autoAllowed.includes(tierFilter as ExportTier)
+      ? [tierFilter as ExportTier]
+      : autoAllowed;
+  if (tiersToPush.length === 0)
+    return NextResponse.json(
+      { error: 'No tiers are enabled for export on this account.' },
+      { status: 400 }
+    );
+
+  // Composite floor: max of caller's min_score and the policy's hard floor.
+  const floor = Math.max(
+    Number(min_score) || 0,
+    Number(policy?.min_composite_score ?? 0)
+  );
+
+  // Build the query — composite_score / export_tier replace the legacy
+  // scrub_score gate so quality and policy rule the destination, not the
+  // raw email-validation score.
   let q = supabase
     .from('leads')
-    .select('email, phone_e164, first_name, last_name, city, region, country, scrub_score')
+    .select('email, phone_e164, first_name, last_name, city, region, country, composite_score, export_tier')
     .eq('client_id', client.id)
     .eq('is_scrubbed', true)
-    .gte('scrub_score', min_score);
+    .in('export_tier', tiersToPush);
+  if (floor > 0) q = q.gte('composite_score', floor);
   if (segment) q = q.eq('icp_segment', segment);
 
   const { data: leads, error: qErr } = await q;
   if (qErr) return NextResponse.json({ error: qErr.message }, { status: 500 });
   if (!leads?.length)
-    return NextResponse.json({ error: 'no leads match filters', filters: { segment, min_score } }, { status: 400 });
+    return NextResponse.json(
+      { error: 'no leads match filters', filters: { segment, min_score: floor, tiers: tiersToPush } },
+      { status: 400 }
+    );
 
   // Hash for Custom Audience upload
   const users = await Promise.all(
@@ -124,7 +169,13 @@ export async function POST(req: NextRequest) {
   await supabase.from('exports').insert({
     client_id: client.id,
     destination: 'smartly',
-    filters: { segment, min_score, audience_name, audience_id: returnedId },
+    filters: {
+      segment,
+      min_composite_score: floor,
+      tiers: tiersToPush,
+      audience_name,
+      audience_id: returnedId,
+    },
     row_count: users.length,
   });
 

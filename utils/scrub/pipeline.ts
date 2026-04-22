@@ -7,7 +7,14 @@ import { scrubEmail, normalizeEmail } from './email';
 import { normalizePhone } from './phone';
 import { enrich } from './enrich';
 import { scoreLead, type ScoreOutput } from '../scoring/score';
-import { assignTier, type ExportPolicy, type ExportTier } from '../scoring/tier';
+import {
+  assignTier,
+  defaultReviewState,
+  type ExportPolicy,
+  type ExportTier,
+  type ReviewState,
+} from '../scoring/tier';
+import { reasonCodesFor, type ReasonCode } from '../scoring/reason-codes';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface RawLead {
@@ -39,6 +46,8 @@ export interface ScrubbedLead extends RawLead, ScoreOutput {
   reject_reason?: string;
   is_scrubbed: boolean;
   export_tier: ExportTier;
+  review_state: ReviewState;
+  reason_codes: ReasonCode[];
   verified_at: string;
   verified_by: string;
 }
@@ -162,6 +171,42 @@ export async function scrubBatch(
       policy: opts.exportPolicy ?? null,
     });
 
+    const review_state = defaultReviewState({
+      tier: export_tier,
+      is_suppressed: !!isSuppressed,
+      is_duplicate: isDuplicate,
+      is_scrubbed: isScrubbed,
+      policy: opts.exportPolicy ?? null,
+    });
+
+    const reason_codes = reasonCodesFor(
+      {
+        syntax_valid: !!emailResult?.syntax_valid,
+        mx_valid: !!emailResult?.mx_valid,
+        smtp_valid: !!emailResult?.smtp_valid,
+        is_disposable: !!emailResult?.is_disposable,
+        is_duplicate: isDuplicate,
+        is_suppressed: !!isSuppressed,
+        email: normalized,
+        phone_e164: phoneE164,
+        first_name: merged.first_name ?? null,
+        last_name: merged.last_name ?? null,
+        company: merged.company ?? null,
+        title: merged.title ?? null,
+        city: merged.city ?? null,
+        region: merged.region ?? null,
+        country: merged.country ?? null,
+        linkedin_url: (merged as { linkedin_url?: string | null }).linkedin_url ?? null,
+        instagram_handle: (merged as { instagram_handle?: string | null }).instagram_handle ?? null,
+        icp_segment: merged.icp_segment ?? null,
+        client_icp_targets: opts.clientIcpTargets ?? null,
+        verified_at: null,
+        source_trust_tier: sourceTrustTier,
+        email_clean: isScrubbed,
+      },
+      scores
+    );
+
     results.push({
       ...merged,
       normalized_email: normalized,
@@ -179,6 +224,8 @@ export async function scrubBatch(
       is_scrubbed: isScrubbed,
       ...scores,
       export_tier,
+      review_state,
+      reason_codes,
       verified_at: new Date().toISOString(),
       verified_by: 'scrub-pipeline',
     });
@@ -201,6 +248,8 @@ export function scoringInsertFields(s: ScrubbedLead) {
     intent_score: s.intent_score,
     source_confidence: s.source_confidence,
     export_tier: s.export_tier,
+    review_state: s.review_state,
+    reason_codes: s.reason_codes,
     verified_at: s.verified_at,
     verified_by: s.verified_by,
   };

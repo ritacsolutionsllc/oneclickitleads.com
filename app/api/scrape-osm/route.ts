@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
+import { loadClientScoringContextBySlug } from '@/utils/scoring/client-context';
+import { trustTierForSource } from '@/utils/scoring/sources';
 
 /**
  * GET /api/scrape-osm?shop=beauty&city=Los+Angeles&region=CA&country=US&client=chella&segment=salon
@@ -113,24 +115,31 @@ export async function GET(request: Request) {
     .filter((r): r is NonNullable<typeof r> => r !== null);
 
   const supabase = createAdminClient();
-  const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', clientSlug).single();
-  if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+  const ctx = await loadClientScoringContextBySlug(supabase, clientSlug);
+  if (!ctx) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+
+  const sourceTrustTier = trustTierForSource('osm');
 
   const { data: src } = await supabase
     .from('sources')
     .insert({
-      client_id: client.id,
-      kind: 'scraped',
+      client_id: ctx.clientId,
+      kind: 'osm',
       label: `osm: ${osmKey}=${shop} in ${city}, ${region}`,
       source_url: 'https://overpass-api.de/api/interpreter',
+      trust_tier: sourceTrustTier,
     })
     .select('id').single();
 
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(supabase as never, ctx.clientId, rows, {
+    doEnrich: true,
+    sourceTrustTier,
+    clientIcpTargets: ctx.icpTargets,
+    exportPolicy: ctx.exportPolicy,
+  });
 
   const toInsert = scrubbed.map((s) => ({
-    client_id: client.id,
+    client_id: ctx.clientId,
     source_id: src?.id,
     company: s.company,
     phone_e164: s.phone_e164,

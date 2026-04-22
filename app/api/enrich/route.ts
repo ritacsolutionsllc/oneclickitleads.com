@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { rescoreLead } from '@/utils/scoring/rescore';
+import { scrubEmail } from '@/utils/scrub/email';
 
 /**
  * POST /api/enrich
@@ -44,15 +46,34 @@ export async function POST(req: NextRequest) {
     };
     const top = data?.emails?.[0];
     if (!top?.value || (top.confidence ?? 0) < 70) continue;
+
+    // Re-validate the email Hunter returned so we don't promote a lead
+    // into the export pool on a stale/dead address.
+    const emailResult = await scrubEmail(top.value);
+    const isClean =
+      emailResult.syntax_valid && emailResult.mx_valid && !emailResult.is_disposable;
+
     await supabase
       .from('leads')
       .update({
-        email: top.value,
+        email: emailResult.normalized || top.value,
         first_name: top.first_name ?? null,
         last_name: top.last_name ?? null,
         title: top.position ?? null,
+        syntax_valid: emailResult.syntax_valid,
+        mx_valid: emailResult.mx_valid,
+        smtp_valid: emailResult.smtp_valid,
+        is_disposable: emailResult.is_disposable,
+        scrub_score: emailResult.score,
+        reject_reason: emailResult.reject_reason ?? null,
+        is_scrubbed: isClean,
       })
       .eq('id', t.id);
+    try {
+      await rescoreLead(supabase, t.id, { verifiedBy: 'hunter-enrich' });
+    } catch (e) {
+      console.error('[enrich] rescore failed', t.id, e);
+    }
     updated++;
   }
 

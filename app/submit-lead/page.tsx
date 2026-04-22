@@ -1,5 +1,8 @@
-import { createClient } from '@/utils/supabase/server';
+import { createAdminClient, createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
+import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
+import { loadClientScoringContextBySlug } from '@/utils/scoring/client-context';
+import { trustTierForSource } from '@/utils/scoring/sources';
 
 type SearchParams = { client?: string; error?: string; ok?: string };
 
@@ -31,11 +34,13 @@ export default async function SubmitLead({
     }
 
     try {
-      const supabase = await createClient();
-
-      const { data: client, error: clientErr } = await supabase
+      // Use the admin client so the scrub pipeline can read suppressions
+      // and existing email_hash values without RLS noise on a public form.
+      // The auth-scoped client is used only to check that the tenant exists.
+      const userClient = await createClient();
+      const { data: clientLookup, error: clientErr } = await userClient
         .from('clients')
-        .select('id')
+        .select('id, slug')
         .eq('slug', slug)
         .maybeSingle();
 
@@ -46,27 +51,85 @@ export default async function SubmitLead({
         );
       }
 
-      if (!client) {
+      if (!clientLookup) {
         redirect(
           `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('This signup link is no longer active.')}`,
         );
       }
 
-      const { error: insertErr } = await supabase.from('leads').insert({
-        client_id: client!.id,
-        email,
-        first_name,
-        last_name: last_name || null,
-        phone_e164: phone || null,
-        icp_segment,
-        raw: Object.fromEntries(formData.entries()),
-      });
+      const supabase = createAdminClient();
+      const ctx = await loadClientScoringContextBySlug(supabase, slug);
+      const sourceTrustTier = trustTierForSource('optin');
 
-      if (insertErr) {
-        console.error('[submit-lead] insert failed:', insertErr);
-        redirect(
-          `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('We could not save your signup. Please try again.')}`,
-        );
+      // Record the source so the lead has lineage. Public opt-in forms are
+      // first-party (consent + traceable to the form submission).
+      const { data: src } = await supabase
+        .from('sources')
+        .insert({
+          client_id: clientLookup!.id,
+          kind: 'optin',
+          label: `submit-lead form (${icp_segment})`,
+          source_url: '/submit-lead',
+          trust_tier: sourceTrustTier,
+        })
+        .select('id')
+        .single();
+
+      const [scrubbed] = await scrubBatch(
+        supabase,
+        clientLookup!.id,
+        [
+          {
+            email,
+            phone: phone || undefined,
+            first_name,
+            last_name: last_name || undefined,
+            icp_segment,
+            source_url: '/submit-lead',
+            tags: ['optin', 'submit-lead'],
+          },
+        ],
+        {
+          doEnrich: false,
+          sourceTrustTier,
+          clientIcpTargets: ctx?.icpTargets ?? [],
+          exportPolicy: ctx?.exportPolicy ?? null,
+        }
+      );
+
+      // Silently ack duplicates and suppressed addresses — both produce the
+      // same UX (we already have the user, or they previously opted out).
+      // Skip the insert in those cases so the unique index doesn't throw.
+      if (!scrubbed.is_duplicate && !scrubbed.is_suppressed) {
+        const { error: insertErr } = await supabase.from('leads').insert({
+          client_id: clientLookup!.id,
+          source_id: src?.id ?? null,
+          email: scrubbed.normalized_email || email,
+          first_name: scrubbed.first_name ?? first_name,
+          last_name: scrubbed.last_name ?? (last_name || null),
+          phone_e164: scrubbed.phone_e164,
+          icp_segment,
+          tags: scrubbed.tags ?? [],
+          is_scrubbed: scrubbed.is_scrubbed,
+          syntax_valid: scrubbed.syntax_valid,
+          mx_valid: scrubbed.mx_valid,
+          smtp_valid: scrubbed.smtp_valid,
+          is_disposable: scrubbed.is_disposable,
+          is_duplicate: scrubbed.is_duplicate,
+          is_suppressed: scrubbed.is_suppressed,
+          scrub_score: scrubbed.scrub_score,
+          reject_reason: scrubbed.reject_reason,
+          ...scoringInsertFields(scrubbed),
+          raw: Object.fromEntries(formData.entries()),
+          scrubbed_at: new Date().toISOString(),
+        });
+
+        if (insertErr) {
+          console.error('[submit-lead] insert failed:', insertErr);
+          redirect(
+            `/submit-lead?client=${encodeURIComponent(slug)}&error=${encodeURIComponent('We could not save your signup. Please try again.')}`,
+          );
+        }
       }
     } catch (err) {
       // `redirect()` throws internally — let it through.
