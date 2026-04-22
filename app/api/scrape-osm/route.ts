@@ -16,10 +16,16 @@ import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
  */
 const ALLOWED_SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as const;
 const ALLOWED_OSM_KEYS = ['shop', 'amenity', 'craft'] as const;
+// Client slugs come from URL parameters and are used as DB lookup keys;
+// keep them to URL-safe identifier characters.
+const CLIENT_SLUG_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const clientSlug = searchParams.get('client') || 'chella';
+  if (!CLIENT_SLUG_RE.test(clientSlug)) {
+    return NextResponse.json({ error: 'invalid client' }, { status: 400 });
+  }
   const segment = searchParams.get('segment') || 'salon';
   if (!(ALLOWED_SEGMENTS as readonly string[]).includes(segment)) {
     return NextResponse.json(
