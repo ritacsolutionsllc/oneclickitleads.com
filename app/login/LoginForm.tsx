@@ -12,22 +12,25 @@ export default function LoginForm() {
   const searchParams = useSearchParams();
   const next = searchParams.get('next');
   const initialError = searchParams.get('error');
+  const prefilledEmail = searchParams.get('email');
+  const signedOut = searchParams.get('signed_out') === '1';
 
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(prefilledEmail ?? '');
   const [status, setStatus] = useState<Status>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(initialError);
   const [cooldown, setCooldown] = useState(0);
 
-  // Prefill email from the previous successful send so a user who missed
-  // the link doesn't have to retype it.
+  // Prefill email from the previous successful send (unless the URL already
+  // supplied one) so a user who missed the link doesn't have to retype it.
   useEffect(() => {
+    if (prefilledEmail) return;
     try {
       const saved = localStorage.getItem(LAST_EMAIL_KEY);
       if (saved) setEmail(saved);
     } catch {
       /* localStorage unavailable — no-op */
     }
-  }, []);
+  }, [prefilledEmail]);
 
   // Tick down the resend cooldown once per second.
   useEffect(() => {
@@ -39,6 +42,17 @@ export default function LoginForm() {
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (status === 'sending' || cooldown > 0) return;
+
+    // Honeypot — real users never fill this hidden field. Bots that submit
+    // the form without rendering CSS will. Fail silently so spammers can't
+    // distinguish success from rejection.
+    const form = e.currentTarget;
+    const trap = (form.elements.namedItem('company_website') as HTMLInputElement | null)?.value;
+    if (trap) {
+      setStatus('sent');
+      setCooldown(COOLDOWN_SECONDS);
+      return;
+    }
 
     setStatus('sending');
     setErrorMsg(null);
@@ -81,6 +95,23 @@ export default function LoginForm() {
 
   return (
     <form onSubmit={onSubmit} className="mt-8 grid gap-4" noValidate>
+      {signedOut && status === 'idle' && (
+        <p className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800" role="status">
+          You&apos;ve been signed out. Sign back in with your work email below.
+        </p>
+      )}
+
+      {/* Honeypot — visually hidden from users + screen readers, but visible
+          to dumb form-filling bots. Any non-empty value triggers silent drop. */}
+      <input
+        type="text"
+        name="company_website"
+        tabIndex={-1}
+        autoComplete="off"
+        aria-hidden="true"
+        className="hidden"
+      />
+
       <label className="grid gap-2">
         <span className="text-sm font-medium text-neutral-800">Work email</span>
         <input
