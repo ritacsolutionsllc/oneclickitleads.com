@@ -3,11 +3,19 @@ import { NextResponse, type NextRequest } from 'next/server';
 
 type CookieToSet = { name: string; value: string; options?: CookieOptions };
 
+// Paths that require a signed-in user. Public marketing pages and the
+// Supabase callback are deliberately excluded — they handle their own auth.
+const PROTECTED_PREFIXES = ['/dashboard'];
+
+function isProtectedPath(pathname: string): boolean {
+  return PROTECTED_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
 /**
  * Refreshes the Supabase auth session on every request and propagates any
- * rotated cookies back to the browser. Without this middleware, the session
- * cookie goes stale between SSR requests and `/dashboard` bounces authenticated
- * users back to `/login`.
+ * rotated cookies back to the browser. Also gates `PROTECTED_PREFIXES`:
+ * unauthenticated users are redirected to `/login?next=<original-path>` so
+ * the magic-link callback can land them back where they started.
  *
  * Follows the official @supabase/ssr middleware pattern (getAll / setAll).
  */
@@ -22,6 +30,7 @@ export async function updateSession(request: NextRequest) {
   }
 
   let response = NextResponse.next({ request });
+  let userId: string | null = null;
 
   try {
     const supabase = createServerClient(url, key, {
@@ -46,9 +55,20 @@ export async function updateSession(request: NextRequest) {
     // Wrap in try/catch: if Supabase is unreachable or a cookie is corrupt,
     // we must NOT crash the request — public pages like /login have to render
     // even when the auth service is degraded.
-    await supabase.auth.getUser();
+    const { data } = await supabase.auth.getUser();
+    userId = data.user?.id ?? null;
   } catch (err) {
     console.error('[supabase/middleware] getUser failed:', err);
+  }
+
+  // Auth gate: if this is a protected path and we have no user, bounce to
+  // /login with the original destination as ?next= so the magic-link flow
+  // can deep-link them back after sign-in.
+  if (!userId && isProtectedPath(request.nextUrl.pathname)) {
+    const loginUrl = new URL('/login', request.url);
+    const dest = request.nextUrl.pathname + request.nextUrl.search;
+    loginUrl.searchParams.set('next', dest);
+    return NextResponse.redirect(loginUrl);
   }
 
   return response;
