@@ -78,3 +78,29 @@ export function canAutoExport(tier: ExportTier, policy?: ExportPolicy | null): b
   const p = { ...DEFAULT_EXPORT_POLICY, ...(policy ?? {}) };
   return p[tier] === 'allow';
 }
+
+/** Operator-facing review queue state. NULL on the row = not in queue. */
+export type ReviewState = 'pending' | 'approved' | 'rejected' | 'quarantined' | 'reverify';
+
+export interface ReviewStateInput {
+  tier: ExportTier;
+  is_suppressed?: boolean;
+  is_duplicate?: boolean;
+  is_scrubbed?: boolean;
+}
+
+/**
+ * Decide what the system-assigned review_state should be when a lead is
+ * scored. Operator-set states (approved/rejected/quarantined/reverify) are
+ * never produced here — only the auto-assigned `pending` for tiers that
+ * require human review, and `null` for tiers that auto-ship or auto-discard.
+ *
+ * Suppressed/duplicate leads are terminal (discard tier) and intentionally
+ * not enqueued — there is nothing for an operator to decide.
+ */
+export function assignReviewState(input: ReviewStateInput): ReviewState | null {
+  if (input.is_suppressed || input.is_duplicate) return null;
+  if (input.is_scrubbed === false) return 'pending';
+  if (input.tier === 'review' || input.tier === 'hold') return 'pending';
+  return null;
+}

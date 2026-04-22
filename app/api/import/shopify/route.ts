@@ -4,7 +4,7 @@ import Papa from 'papaparse';
 import { normalizeEmail } from '@/utils/scrub/email';
 import { normalizePhone } from '@/utils/scrub/phone';
 import { scoreLead } from '@/utils/scoring/score';
-import { assignTier } from '@/utils/scoring/tier';
+import { assignTier, assignReviewState } from '@/utils/scoring/tier';
 
 /**
  * POST /api/import/shopify
@@ -96,6 +96,10 @@ export async function POST(req: NextRequest) {
       composite_score: scores.composite_score,
       is_scrubbed: true,
     });
+    const review_state = assignReviewState({
+      tier: export_tier,
+      is_scrubbed: true,
+    });
     return {
       client_id: client.id,
       source_id: src?.id,
@@ -126,6 +130,7 @@ export async function POST(req: NextRequest) {
       intent_score: scores.intent_score,
       source_confidence: scores.source_confidence,
       export_tier,
+      review_state,
       verified_at: now,
       verified_by: 'shopify-import',
       raw: r,

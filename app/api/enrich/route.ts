@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { rescoreLeadById } from '@/utils/scoring/rescore';
 
 /**
  * POST /api/enrich
@@ -53,6 +54,9 @@ export async function POST(req: NextRequest) {
         title: top.position ?? null,
       })
       .eq('id', t.id);
+    // Hunter just gave us identity + completeness signals — re-score so
+    // tier/review_state reflect the new state instead of the old "no email" row.
+    await rescoreLeadById(supabase as never, t.id, { verifiedBy: 'enrich:hunter' });
     updated++;
   }
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { rescoreLeadById } from '@/utils/scoring/rescore';
 
 /**
  * POST /api/harvest-emails
@@ -76,6 +77,12 @@ export async function POST(req: NextRequest) {
             raw: { ...(lead.raw as object), harvested_from: hit.found_on },
           })
           .eq('id', lead.id);
+        // Recompute identity/completeness/composite + tier so a freshly
+        // harvested lead can climb out of `hold`/`review` into an export
+        // tier without waiting for the nightly re-scrub.
+        await rescoreLeadById(supabase as never, lead.id, {
+          verifiedBy: 'harvest-emails',
+        });
       }
     }
   }

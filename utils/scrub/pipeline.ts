@@ -7,7 +7,13 @@ import { scrubEmail, normalizeEmail } from './email';
 import { normalizePhone } from './phone';
 import { enrich } from './enrich';
 import { scoreLead, type ScoreOutput } from '../scoring/score';
-import { assignTier, type ExportPolicy, type ExportTier } from '../scoring/tier';
+import {
+  assignTier,
+  assignReviewState,
+  type ExportPolicy,
+  type ExportTier,
+  type ReviewState,
+} from '../scoring/tier';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 export interface RawLead {
@@ -39,6 +45,7 @@ export interface ScrubbedLead extends RawLead, ScoreOutput {
   reject_reason?: string;
   is_scrubbed: boolean;
   export_tier: ExportTier;
+  review_state: ReviewState | null;
   verified_at: string;
   verified_by: string;
 }
@@ -161,6 +168,12 @@ export async function scrubBatch(
       is_scrubbed: isScrubbed,
       policy: opts.exportPolicy ?? null,
     });
+    const review_state = assignReviewState({
+      tier: export_tier,
+      is_suppressed: !!isSuppressed,
+      is_duplicate: isDuplicate,
+      is_scrubbed: isScrubbed,
+    });
 
     results.push({
       ...merged,
@@ -179,6 +192,7 @@ export async function scrubBatch(
       is_scrubbed: isScrubbed,
       ...scores,
       export_tier,
+      review_state,
       verified_at: new Date().toISOString(),
       verified_by: 'scrub-pipeline',
     });
@@ -201,6 +215,7 @@ export function scoringInsertFields(s: ScrubbedLead) {
     intent_score: s.intent_score,
     source_confidence: s.source_confidence,
     export_tier: s.export_tier,
+    review_state: s.review_state,
     verified_at: s.verified_at,
     verified_by: s.verified_by,
   };
