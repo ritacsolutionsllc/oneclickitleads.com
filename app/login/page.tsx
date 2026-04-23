@@ -1,8 +1,8 @@
 'use client';
 
-import { Suspense, useState } from 'react';
+import { Suspense, useState, useEffect } from 'react';
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import SiteShell from '@/components/SiteShell';
 import { createClient } from '@/utils/supabase/client';
 
@@ -13,6 +13,15 @@ function LoginForm() {
   const [email, setEmail] = useState('');
   const [status, setStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(initialError);
+  const router = useRouter();
+
+  // Redirect already-authenticated users straight to dashboard
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) router.replace(next && next.startsWith('/') ? next : '/dashboard');
+    });
+  }, [next, router]);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
