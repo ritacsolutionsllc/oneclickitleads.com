@@ -1,6 +1,7 @@
 import { createClient } from '@/utils/supabase/server';
 import { redirect } from 'next/navigation';
 import Link from 'next/link';
+import { Suspense } from 'react';
 import DashboardNav from '@/components/DashboardNav';
 import ClientSwitcher from '@/components/ClientSwitcher';
 import SignOutButton from '@/components/SignOutButton';
@@ -42,7 +43,9 @@ export default async function DashboardLayout({ children }: { children: React.Re
         <div className="mx-auto max-w-7xl px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-6">
             <Link href="/" className="font-semibold">OneClickitLeads</Link>
-            <ClientSwitcher clients={clients ?? []} />
+            <Suspense fallback={<div className="h-8 w-40 rounded-full bg-neutral-100" />}>
+              <ClientSwitcher clients={clients ?? []} />
+            </Suspense>
           </div>
           <div className="flex items-center gap-4 text-sm">
             <Link href="/pricing" className="text-neutral-600 hover:text-neutral-900">Pricing</Link>
