@@ -19,7 +19,13 @@ function LoginForm() {
   useEffect(() => {
     const supabase = createClient();
     supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user) router.replace(next && next.startsWith('/') ? next : '/dashboard');
+      if (user) {
+        const safeRedirect =
+          next && next.startsWith('/') && !next.startsWith('//') && !next.startsWith('/\\')
+            ? next
+            : '/dashboard';
+        router.replace(safeRedirect);
+      }
     });
   }, [next, router]);
 
