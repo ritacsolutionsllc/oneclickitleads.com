@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 
 type Client = { id: string; name: string; slug: string; plan: string };
-type Source = 'osm' | 'places' | 'harvest' | 'enrich';
+type Source = 'osm' | 'places' | 'harvest' | 'enrich' | 'rescrub';
 
 const SOURCES: {
   key: Source;
@@ -39,6 +39,13 @@ const SOURCES: {
     badge: 'HUNTER_API_KEY',
     description:
       'For leads that have a website but no email, query Hunter.io domain search and write the top verified result back.',
+  },
+  {
+    key: 'rescrub',
+    label: 'Scrub List',
+    badge: 'free',
+    description:
+      'Validate emails, deduplicate, score, and tier all pending leads — run this after harvesting to make leads exportable.',
   },
 ];
 
@@ -89,6 +96,7 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
     if (source === 'places') Object.assign(body, { query, segment });
     if (source === 'harvest') Object.assign(body, { limit });
     if (source === 'enrich') Object.assign(body, { batch_size: batchSize });
+    if (source === 'rescrub') Object.assign(body, { limit });
 
     try {
       const res = await fetch('/api/dashboard/scrape', {
@@ -228,6 +236,25 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
             </Field>
           )}
 
+          {source === 'rescrub' && (
+            <>
+              <Field label="Max leads to scrub" hint="1 – 500">
+                <input
+                  type="number"
+                  min={1}
+                  max={500}
+                  className={inp}
+                  value={limit}
+                  onChange={(e) => setLimit(Number(e.target.value))}
+                />
+              </Field>
+              <p className="text-xs text-neutral-500 leading-relaxed">
+                Picks up leads that have an email but are still marked <em>pending</em> — validates emails, removes
+                duplicates, scores each lead, and assigns an export tier so they appear in CSV exports.
+              </p>
+            </>
+          )}
+
           <button
             onClick={run}
             disabled={running}
@@ -250,7 +277,7 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
         <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-5">
           <div className="font-medium text-emerald-900 mb-3">Complete</div>
           <div className="grid sm:grid-cols-3 gap-3 mb-4">
-            {(['inserted', 'skipped', 'errors'] as const).map((k) =>
+            {(['inserted', 'skipped', 'errors', 'processed', 'clean', 'rejected'] as const).map((k) =>
               result[k] != null ? (
                 <div key={k} className="rounded-lg bg-white border border-emerald-200 p-3 text-center">
                   <div className="text-2xl font-semibold text-emerald-800">{String(result[k])}</div>
