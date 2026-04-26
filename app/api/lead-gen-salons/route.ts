@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
-import { scrubEmail } from '@/utils/scrub/email';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
 
 /**
@@ -115,7 +114,7 @@ export async function GET(req: NextRequest) {
       const city_ = componentOf(place.addressComponents, ['locality', 'postal_town']);
       const region = componentShort(place.addressComponents, ['administrative_area_level_1']);
       const country = componentShort(place.addressComponents, ['country']) ?? 'US';
-      const phone = place.nationalPhoneNumber ?? null;
+      const phone = place.nationalPhoneNumber ?? undefined;
       const website = place.websiteUri ?? null;
 
       let email: string | undefined;
@@ -220,7 +219,7 @@ interface PlaceResult {
 
 interface RawRow {
   company: string | null;
-  phone: string | null;
+  phone?: string;
   email?: string;
   city: string | null;
   region: string | null;
