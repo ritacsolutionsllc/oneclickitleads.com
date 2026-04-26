@@ -115,7 +115,7 @@ export async function GET(req: NextRequest) {
       const region = componentShort(place.addressComponents, ['administrative_area_level_1']);
       const country = componentShort(place.addressComponents, ['country']) ?? 'US';
       const phone = place.nationalPhoneNumber ?? undefined;
-      const website = place.websiteUri ?? null;
+      const website = place.websiteUri ?? undefined;
 
       let email: string | undefined;
       let emailSource: string | undefined;
@@ -126,11 +126,11 @@ export async function GET(req: NextRequest) {
       }
 
       rows.push({
-        company: place.displayName?.text ?? null,
+        company: place.displayName?.text ?? undefined,
         phone,
         email,
-        city: city_ ?? null,
-        region: region ?? null,
+        city: city_ ?? undefined,
+        region: region ?? undefined,
         country,
         icp_segment: segment,
         tags: ['google_places', segment, ...(place.types ?? [])].slice(0, 10),
@@ -218,15 +218,15 @@ interface PlaceResult {
 }
 
 interface RawRow {
-  company: string | null;
+  company?: string;
   phone?: string;
   email?: string;
-  city: string | null;
-  region: string | null;
-  country: string;
-  icp_segment: string;
-  tags: string[];
-  source_url: string | null;
+  city?: string;
+  region?: string;
+  country?: string;
+  icp_segment?: string;
+  tags?: string[];
+  source_url?: string;
   email_source?: string;
   place_id?: string;
   raw_rating?: number;
