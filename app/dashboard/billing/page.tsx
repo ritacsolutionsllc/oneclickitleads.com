@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { planByTier, displayPlans, PLANS } from '@/lib/plans';
 import PortalButton from '@/components/PortalButton';
 import SubscribeButton from '@/components/SubscribeButton';
+import { isAdminEmail } from '@/utils/admin';
 
 export default async function BillingPage({ searchParams }: { searchParams: Promise<{ client?: string }> }) {
   const sp = await searchParams;
@@ -17,6 +18,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
   const active = (clients ?? []).find((c) => c.slug === sp.client) ?? clients?.[0];
   if (!active) return <div className="text-neutral-500">Create a client first.</div>;
 
+  const isAdmin = isAdminEmail(user.email);
   const plan = planByTier(active.plan);
   const hasSub = Boolean(active.stripe_subscription_id);
 
@@ -31,7 +33,12 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
 
   return (
     <div>
-      <h1 className="text-2xl font-semibold">Billing</h1>
+      <div className="flex items-center gap-3">
+        <h1 className="text-2xl font-semibold">Billing</h1>
+        {isAdmin && (
+          <span className="rounded-full bg-violet-100 text-violet-800 px-3 py-0.5 text-xs font-medium">Admin — unlimited access</span>
+        )}
+      </div>
       <p className="text-sm text-neutral-600">Manage your subscription, view usage, and switch plans.</p>
 
       {/* Current plan */}
@@ -47,36 +54,44 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
               </div>
             )}
           </div>
-          <div className="flex gap-2">
-            {hasSub ? (
-              <PortalButton className="rounded-full bg-neutral-900 text-white px-4 py-2 text-sm hover:bg-neutral-800">
-                Manage in Stripe
-              </PortalButton>
-            ) : (
-              <Link href="/pricing" className="rounded-full bg-emerald-600 text-white px-4 py-2 text-sm hover:bg-emerald-700">
-                Start subscription
-              </Link>
-            )}
-          </div>
+          {!isAdmin && (
+            <div className="flex gap-2">
+              {hasSub ? (
+                <PortalButton className="rounded-full bg-neutral-900 text-white px-4 py-2 text-sm hover:bg-neutral-800">
+                  Manage in Stripe
+                </PortalButton>
+              ) : (
+                <Link href="/pricing" className="rounded-full bg-emerald-600 text-white px-4 py-2 text-sm hover:bg-emerald-700">
+                  Start subscription
+                </Link>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Usage meter */}
         <div className="mt-6">
           <div className="flex items-baseline justify-between text-sm">
             <div className="text-neutral-600">Clean leads this month</div>
-            <div><strong>{used.toLocaleString()}</strong> / {cap.toLocaleString()}</div>
+            {isAdmin ? (
+              <div className="text-violet-700 font-medium">Unlimited</div>
+            ) : (
+              <div><strong>{used.toLocaleString()}</strong> / {cap.toLocaleString()}</div>
+            )}
           </div>
-          <div className="mt-2 h-2 rounded-full bg-neutral-100 overflow-hidden">
-            <div
-              className={`h-full ${pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : 'bg-emerald-500'}`}
-              style={{ width: `${pct}%` }}
-            />
-          </div>
+          {!isAdmin && (
+            <div className="mt-2 h-2 rounded-full bg-neutral-100 overflow-hidden">
+              <div
+                className={`h-full ${pct > 90 ? 'bg-red-500' : pct > 70 ? 'bg-amber-500' : 'bg-emerald-500'}`}
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Switch plan */}
-      <div className="mt-10">
+      {/* Switch plan — hidden for admin users */}
+      {!isAdmin && <div className="mt-10">
         <h2 className="text-lg font-semibold">Change plan</h2>
         <div className="mt-4 grid md:grid-cols-3 gap-4">
           {displayPlans().filter((p) => p.tier !== 'enterprise').map((p) => {
@@ -107,7 +122,7 @@ export default async function BillingPage({ searchParams }: { searchParams: Prom
             );
           })}
         </div>
-      </div>
+      </div>}
 
       {/* Enterprise */}
       <div className="mt-10 rounded-xl border border-neutral-900 bg-neutral-900 text-white p-6 flex flex-wrap justify-between items-center gap-4">

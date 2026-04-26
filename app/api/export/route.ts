@@ -4,6 +4,7 @@ import Papa from 'papaparse';
 import { enforceExport, maxRowsForExport } from '@/utils/plans/enforce';
 import { planByTier } from '@/lib/plans';
 import { allowedTiers, type ExportPolicy, type ExportTier } from '@/utils/scoring/tier';
+import { isAdminEmail } from '@/utils/admin';
 
 /**
  * GET /api/export?client=chella&format=csv|smartly&segment=salon&tier=standard&min_score=60
@@ -51,24 +52,28 @@ export async function GET(req: NextRequest) {
     .single();
   if (!client) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
-  // Plan enforcement
-  const cap = await enforceExport(client.id);
-  if (!cap.ok) {
-    return NextResponse.json(
-      {
-        error: 'Monthly plan cap reached',
-        detail: `You've exported ${cap.used} / ${cap.cap} clean leads on the ${cap.plan} plan this month.`,
-        upgrade_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/billing`,
-      },
-      { status: 402 }
-    );
+  // Admin users bypass plan caps entirely
+  const admin = isAdminEmail(user.email);
+  let rowLimit = 1_000_000;
+
+  if (!admin) {
+    const cap = await enforceExport(client.id);
+    if (!cap.ok) {
+      return NextResponse.json(
+        {
+          error: 'Monthly plan cap reached',
+          detail: `You've exported ${cap.used} / ${cap.cap} clean leads on the ${cap.plan} plan this month.`,
+          upgrade_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/billing`,
+        },
+        { status: 402 }
+      );
+    }
+    const plan = planByTier(client.plan);
+    rowLimit = maxRowsForExport(plan, cap.remaining ?? 10_000);
   }
 
-  const plan = planByTier(client.plan);
-  const rowLimit = maxRowsForExport(plan, cap.remaining ?? 10_000);
-
   const policy = (client.export_policy ?? null) as ExportPolicy | null;
-  const autoAllowed = allowedTiers(policy);
+  const autoAllowed = admin ? [...VALID_TIERS] : allowedTiers(policy);
   // If the caller asked for a specific tier, only honor it if policy allows it.
   const tiersToExport: ExportTier[] =
     tierFilter && autoAllowed.includes(tierFilter as ExportTier)
