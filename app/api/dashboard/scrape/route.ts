@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, createAdminClient } from '@/utils/supabase/server';
+import { canCustomScrape } from '@/lib/plans';
 
-const VALID_SOURCES = ['osm', 'places', 'harvest', 'enrich', 'rescrub'] as const;
+const VALID_SOURCES = ['places', 'harvest', 'enrich', 'rescrub'] as const;
 type Source = (typeof VALID_SOURCES)[number];
 
 const VALID_SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as const;
@@ -10,8 +11,11 @@ const VALID_SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as cons
  * POST /api/dashboard/scrape
  *
  * Auth-protected proxy that verifies the requesting user owns the target
- * client before forwarding to the internal scraper routes. Records every
- * run in scrape_runs for persistent history.
+ * client AND has a plan that permits custom scraping before forwarding
+ * to the internal scraper routes.
+ *
+ * OSM source removed — replaced by pre-scraped inventory.
+ * Custom scraping (places/harvest/enrich) is restricted to agency+ plans.
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -32,11 +36,27 @@ export async function POST(req: NextRequest) {
 
   const { data: clientRow } = await supabase
     .from('clients')
-    .select('id')
+    .select('id, plan')
     .eq('slug', clientSlug)
     .eq('owner_user', user.id)
     .single();
   if (!clientRow) return NextResponse.json({ error: 'client not found' }, { status: 404 });
+
+  // ── Plan gate: custom scraping requires agency or enterprise ──────────────
+  if (!canCustomScrape(clientRow.plan)) {
+    return NextResponse.json(
+      {
+        error: 'Custom scraping requires the Agency plan ($499/mo).',
+        upgrade_url: '/pricing',
+        current_plan: clientRow.plan,
+        message:
+          'Your plan includes access to our pre-scraped US beauty database. ' +
+          'Upgrade to Agency to run custom city, query, or niche scrapes.',
+      },
+      { status: 402 },
+    );
+  }
+  // ─────────────────────────────────────────────────────────────────────────
 
   const origin = new URL(req.url).origin;
   const secret = process.env.INGEST_SECRET ?? '';
@@ -57,13 +77,7 @@ export async function POST(req: NextRequest) {
   try {
     let res: Response;
 
-    if (source === 'osm') {
-      const shop = String(body.shop ?? 'beauty').slice(0, 50);
-      const city = String(body.city ?? '').slice(0, 100);
-      const region = String(body.region ?? '').slice(0, 50);
-      const qs = new URLSearchParams({ client: clientSlug, shop, city, region, segment });
-      res = await fetch(`${origin}/api/scrape-osm?${qs}`, { signal: AbortSignal.timeout(55_000) });
-    } else if (source === 'places') {
+    if (source === 'places') {
       const query = String(body.query ?? '').slice(0, 200);
       if (!query) return NextResponse.json({ error: 'query is required for Places' }, { status: 400 });
       const qs = new URLSearchParams({ client: clientSlug, query, segment });

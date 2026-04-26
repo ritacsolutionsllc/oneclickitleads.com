@@ -7,6 +7,7 @@
  *   - /api/stripe/webhook (map price → tier → client plan)
  *   - /api/export (enforce monthly cap)
  *   - Dashboard billing page
+ *   - ScrapeForm (customScrapes gate)
  *
  * When adding a plan, also:
  *   1. Create a Stripe Price in dashboard + set STRIPE_PRICE_<TIER> env var
@@ -27,11 +28,13 @@ export type Plan = {
     icpSegments: number | 'unlimited';  // how many ICPs they can run
     sources: ('places' | 'hunter' | 'apollo' | 'commonroom' | 'scrapingbee' | 'purchased')[];
     destinations: ('csv' | 'smartly' | 'meta_capi' | 'tiktok' | 'klaviyo_push')[];
-    firstPartySync: boolean;            // shopify + klaviyo import
+    firstPartySync: boolean;
     suppressionList: boolean;
     scheduledScrubs: boolean;           // pg_cron nightly
     smtpVerification: boolean;          // NeverBounce/ZeroBounce
     emailEnrichment: boolean;           // Hunter.io
+    customScrapes: boolean;             // custom city/query scraping — agency+ only
+    inventoryAccess: boolean;           // pre-scraped US beauty database
     support: 'community' | 'email' | 'priority' | 'dedicated';
     whitelabel: boolean;
     apiAccess: boolean;
@@ -52,8 +55,9 @@ export const PLANS: Record<PlanTier, Plan> = {
     priceYearlyPerMonth: 39,
     tagline: 'Validate one ICP, prove the funnel.',
     highlights: [
-      '2,500 scrubbed leads / month',
+      '2,500 pre-scraped beauty leads / month',
       '1 ICP segment',
+      'US beauty database (salons, medspas, retailers)',
       'CSV export',
       'Email support',
     ],
@@ -67,6 +71,8 @@ export const PLANS: Record<PlanTier, Plan> = {
       scheduledScrubs: false,
       smtpVerification: true,
       emailEnrichment: true,
+      customScrapes: false,
+      inventoryAccess: true,
       support: 'email',
       whitelabel: false,
       apiAccess: false,
@@ -82,7 +88,7 @@ export const PLANS: Record<PlanTier, Plan> = {
     priceYearlyPerMonth: 159,
     tagline: 'The Chella plan — multi-channel activation.',
     highlights: [
-      '15,000 scrubbed leads / month',
+      '15,000 pre-scraped beauty leads / month',
       '4 ICP segments',
       'smartly.io + Meta CAPI push',
       'Shopify + Klaviyo first-party sync',
@@ -99,6 +105,8 @@ export const PLANS: Record<PlanTier, Plan> = {
       scheduledScrubs: true,
       smtpVerification: true,
       emailEnrichment: true,
+      customScrapes: false,
+      inventoryAccess: true,
       support: 'priority',
       whitelabel: false,
       apiAccess: true,
@@ -116,6 +124,7 @@ export const PLANS: Record<PlanTier, Plan> = {
     highlights: [
       '60,000 scrubbed leads / month',
       'Unlimited ICP segments',
+      'Custom scraping — any city, query, or niche',
       'All destinations (smartly, Meta, TikTok, Klaviyo)',
       'White-label dashboard',
       'API access',
@@ -131,6 +140,8 @@ export const PLANS: Record<PlanTier, Plan> = {
       scheduledScrubs: true,
       smtpVerification: true,
       emailEnrichment: true,
+      customScrapes: true,
+      inventoryAccess: true,
       support: 'dedicated',
       whitelabel: true,
       apiAccess: true,
@@ -146,6 +157,7 @@ export const PLANS: Record<PlanTier, Plan> = {
     tagline: 'Custom volume, DPA, SSO, deployed in your VPC.',
     highlights: [
       'Custom lead volume',
+      'Custom scraping — unlimited',
       'SSO / SAML',
       'DPA + BAA on request',
       'VPC or on-prem deploy',
@@ -161,6 +173,8 @@ export const PLANS: Record<PlanTier, Plan> = {
       scheduledScrubs: true,
       smtpVerification: true,
       emailEnrichment: true,
+      customScrapes: true,
+      inventoryAccess: true,
       support: 'dedicated',
       whitelabel: true,
       apiAccess: true,
@@ -175,6 +189,10 @@ export const PLAN_ORDER: PlanTier[] = ['starter', 'growth', 'agency', 'enterpris
 export function planByTier(tier: string | null | undefined): Plan {
   const t = (tier ?? 'starter') as PlanTier;
   return PLANS[t] ?? PLANS.starter;
+}
+
+export function canCustomScrape(tier: string | null | undefined): boolean {
+  return planByTier(tier).features.customScrapes;
 }
 
 export function stripePriceFor(tier: PlanTier): string | undefined {
