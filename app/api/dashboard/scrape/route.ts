@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 
-const VALID_SOURCES = ['osm', 'places', 'harvest', 'enrich'] as const;
+const VALID_SOURCES = ['osm', 'places', 'harvest', 'enrich', 'rescrub'] as const;
 type Source = (typeof VALID_SOURCES)[number];
 
 const VALID_SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as const;
@@ -83,6 +83,17 @@ export async function POST(req: NextRequest) {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-ingest-secret': secret },
         body: JSON.stringify({ client_slug: clientSlug, batch_size: batchSize }),
+        signal: AbortSignal.timeout(55_000),
+      });
+      return NextResponse.json(await res.json(), { status: res.status });
+    }
+
+    if (source === 'rescrub') {
+      const limit = Math.min(500, Math.max(1, Number(body.limit ?? 100)));
+      const res = await fetch(`${origin}/api/dashboard/rescrub`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-ingest-secret': secret },
+        body: JSON.stringify({ client_slug: clientSlug, limit }),
         signal: AbortSignal.timeout(55_000),
       });
       return NextResponse.json(await res.json(), { status: res.status });

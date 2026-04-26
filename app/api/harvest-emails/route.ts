@@ -14,7 +14,11 @@ import { createAdminClient } from '@/utils/supabase/server';
  * emails don't live in Hunter's index but are printed on their own homepage.
  */
 
-const CONTACT_PATHS = ['', '/contact', '/contact-us', '/contact.html', '/about', '/about-us'];
+const CONTACT_PATHS = [
+  '', '/contact', '/contact-us', '/contact.html', '/about', '/about-us',
+  '/team', '/staff', '/reach-us', '/get-in-touch', '/pages/contact',
+  '/info', '/book', '/booking', '/appointments', '/location',
+];
 const EMAIL_RX = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 const MAILTO_RX = /mailto:([^"'?\s>]+)/gi;
 const OBFUSCATION_RX =
