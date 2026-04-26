@@ -231,6 +231,7 @@ interface RawRow {
   place_id?: string;
   raw_rating?: number;
   raw_rating_count?: number;
+  [k: string]: unknown;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
