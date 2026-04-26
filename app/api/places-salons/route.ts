@@ -26,8 +26,8 @@ export async function GET(request: Request) {
       { status: 400 }
     );
   }
-  const key = process.env.GOOGLE_PLACES_KEY;
-  if (!key) return NextResponse.json({ error: 'missing GOOGLE_PLACES_KEY' }, { status: 500 });
+  const key = process.env.GOOGLE_PLACES_API_KEY;
+  if (!key) return NextResponse.json({ error: 'missing GOOGLE_PLACES_API_KEY' }, { status: 500 });
 
   const fieldMask = [
     'places.id',
