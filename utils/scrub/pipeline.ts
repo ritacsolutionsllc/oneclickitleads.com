@@ -122,9 +122,12 @@ export async function scrubBatch(
     }
 
     const isScrubbed =
-      !!emailResult?.syntax_valid &&
-      !!emailResult?.mx_valid &&
-      !emailResult?.is_disposable &&
+      (
+        // Valid email path
+        (!!emailRaw && !!emailResult?.syntax_valid && !!emailResult?.mx_valid && !emailResult?.is_disposable) ||
+        // Phone-only path — no email provided but a valid E.164 phone exists
+        (!emailRaw && !!phoneE164)
+      ) &&
       !isDuplicate &&
       !isSuppressed;
 

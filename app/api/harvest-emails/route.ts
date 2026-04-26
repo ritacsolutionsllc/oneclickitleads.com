@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
+import { scrubEmail } from '@/utils/scrub/email';
 
 /**
  * POST /api/harvest-emails
@@ -71,15 +72,26 @@ export async function POST(req: NextRequest) {
       const hit = await harvestSite(site);
       results.push({ lead_id: lead.id, company: lead.company, site, ...hit });
       if (hit.email) {
-        await supabase
-          .from('leads')
-          .update({
-            email: hit.email,
-            syntax_valid: true,
-            reject_reason: null,
-            raw: { ...(lead.raw as object), harvested_from: hit.found_on },
-          })
-          .eq('id', lead.id);
+        // Validate before writing — regex extraction can produce malformed emails
+        const check = await scrubEmail(hit.email);
+        if (check.syntax_valid && check.mx_valid && !check.is_disposable) {
+          await supabase
+            .from('leads')
+            .update({
+              email: check.normalized || hit.email,
+              syntax_valid: check.syntax_valid,
+              mx_valid: check.mx_valid,
+              smtp_valid: check.smtp_valid,
+              is_disposable: false,
+              scrub_score: check.score,
+              reject_reason: null,
+              raw: { ...(lead.raw as object), harvested_from: hit.found_on },
+            })
+            .eq('id', lead.id);
+        } else {
+          // Discard the harvested email — don't write junk
+          hit.email = undefined;
+        }
       }
     }
   }
