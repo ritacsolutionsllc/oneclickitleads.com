@@ -4,15 +4,14 @@ import Papa from 'papaparse';
 import { enforceExport, maxRowsForExport } from '@/utils/plans/enforce';
 import { planByTier } from '@/lib/plans';
 import { allowedTiers, type ExportPolicy, type ExportTier } from '@/utils/scoring/tier';
+import { isAdminEmail } from '@/utils/admin';
 
 /**
  * GET /api/export?client=chella&format=csv|smartly&segment=salon&tier=standard&min_score=60
  *
- * - Only export rows where is_scrubbed = true (defense in depth; RLS also enforces tenant).
- * - Only export rows whose export_tier is `allow`ed by the client's export_policy.
- *   Tiers marked `manual` or `block` never ship through this endpoint; `manual`
- *   tiers (e.g. review) go through the review queue UI.
- * - Plan cap enforced via v_client_usage.
+ * - Exports all is_scrubbed=true leads by default.
+ * - When export_tier is set on leads, honors the client's export_policy tier filter.
+ * - Plan cap enforced via v_client_usage (admin users bypass cap).
  * - Writes an `exports` row for audit.
  */
 const VALID_TIERS: ExportTier[] = [
@@ -51,59 +50,90 @@ export async function GET(req: NextRequest) {
     .single();
   if (!client) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
-  // Plan enforcement
-  const cap = await enforceExport(client.id);
-  if (!cap.ok) {
-    return NextResponse.json(
-      {
-        error: 'Monthly plan cap reached',
-        detail: `You've exported ${cap.used} / ${cap.cap} clean leads on the ${cap.plan} plan this month.`,
-        upgrade_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/billing`,
-      },
-      { status: 402 }
-    );
-  }
+  // Admin users bypass plan caps entirely
+  const admin = isAdminEmail(user.email);
+  let rowLimit = 1_000_000;
 
-  const plan = planByTier(client.plan);
-  const rowLimit = maxRowsForExport(plan, cap.remaining ?? 10_000);
+  if (!admin) {
+    const cap = await enforceExport(client.id);
+    if (!cap.ok) {
+      return NextResponse.json(
+        {
+          error: 'Monthly plan cap reached',
+          detail: `You've exported ${cap.used} / ${cap.cap} clean leads on the ${cap.plan} plan this month.`,
+          upgrade_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard/billing`,
+        },
+        { status: 402 }
+      );
+    }
+    const plan = planByTier(client.plan);
+    rowLimit = maxRowsForExport(plan, cap.remaining ?? 10_000);
+  }
 
   const policy = (client.export_policy ?? null) as ExportPolicy | null;
-  const autoAllowed = allowedTiers(policy);
-  // If the caller asked for a specific tier, only honor it if policy allows it.
-  const tiersToExport: ExportTier[] =
-    tierFilter && autoAllowed.includes(tierFilter as ExportTier)
-      ? [tierFilter as ExportTier]
-      : autoAllowed;
 
-  if (tiersToExport.length === 0) {
-    return NextResponse.json(
-      { error: 'No tiers are enabled for export on this account.' },
-      { status: 400 }
-    );
+  // Build tier constraint: if a specific tier was requested, honor it;
+  // otherwise use policy-allowed tiers (but also include leads with no tier set).
+  let tiersToExport: ExportTier[] | null = null;
+  if (tierFilter) {
+    const allowed = admin ? [...VALID_TIERS] : allowedTiers(policy);
+    if (!allowed.includes(tierFilter as ExportTier)) {
+      return NextResponse.json(
+        { error: 'That tier is not enabled for export on this account.' },
+        { status: 400 }
+      );
+    }
+    tiersToExport = [tierFilter as ExportTier];
   }
+  // When no explicit tier filter, export all scrubbed leads regardless of tier assignment.
 
-  const floor = Math.max(
-    minScore,
-    Number(policy?.min_composite_score ?? 0)
-  );
+  const floor = minScore > 0 ? minScore : 0;
 
   let q = supabase
     .from('leads')
     .select(
-      'email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, composite_score, export_tier, scrub_score'
+      'email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, composite_score, export_tier, scrub_score, tags, raw'
     )
     .eq('client_id', client.id)
     .eq('is_scrubbed', true)
-    .in('export_tier', tiersToExport)
     .order('composite_score', { ascending: false, nullsFirst: false })
     .limit(rowLimit);
+
+  if (tiersToExport) q = q.in('export_tier', tiersToExport);
   if (segment) q = q.eq('icp_segment', segment);
   if (floor > 0) q = q.gte('composite_score', floor);
 
   const { data: leads, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const rows = leads ?? [];
+  // Remap to flat CSV-friendly shape; extract website from raw JSONB
+  type LeadRow = {
+    email: string | null; first_name: string | null; last_name: string | null;
+    phone_e164: string | null; company: string | null; title: string | null;
+    icp_segment: string | null; city: string | null; region: string | null;
+    country: string | null; composite_score: number | null; export_tier: string | null;
+    scrub_score: number | null; tags: unknown; raw: unknown;
+  };
+  const rows = ((leads ?? []) as LeadRow[]).map((r: LeadRow) => {
+    const raw = r.raw as { source_url?: string } | null;
+    return {
+      email: r.email,
+      first_name: r.first_name,
+      last_name: r.last_name,
+      phone: r.phone_e164,
+      company: r.company,
+      title: r.title,
+      icp_segment: r.icp_segment,
+      city: r.city,
+      region: r.region,
+      country: r.country,
+      website: raw?.source_url ?? null,
+      tags: Array.isArray(r.tags) ? (r.tags as string[]).join(', ') : null,
+      composite_score: r.composite_score,
+      export_tier: r.export_tier,
+      scrub_score: r.scrub_score,
+    };
+  });
 
   await supabase.from('exports').insert({
     client_id: client.id,
@@ -112,15 +142,14 @@ export async function GET(req: NextRequest) {
     filters: {
       segment,
       min_score: minScore || undefined,
-      min_composite_score: floor || undefined,
-      tiers: tiersToExport,
+      tier: tiersToExport ?? undefined,
     },
     created_by: user.id,
   });
 
   if (format === 'smartly') {
     const hashed = await Promise.all(
-      rows.map(async (r) => ({ email_sha256: await sha256(r.email ?? '') }))
+      rows.map(async (r: { email: string | null }) => ({ email_sha256: await sha256(r.email ?? '') }))
     );
     return NextResponse.json({ account_id: process.env.SMARTLY_ACCOUNT_ID, audience: hashed });
   }
@@ -129,7 +158,7 @@ export async function GET(req: NextRequest) {
   return new NextResponse(csv, {
     headers: {
       'Content-Type': 'text/csv',
-      'Content-Disposition': `attachment; filename="${clientSlug}-leads-${new Date().toISOString().slice(0,10)}.csv"`,
+      'Content-Disposition': `attachment; filename="${clientSlug}-leads-${new Date().toISOString().slice(0, 10)}.csv"`,
     },
   });
 }

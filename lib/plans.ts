@@ -7,6 +7,7 @@
  *   - /api/stripe/webhook (map price → tier → client plan)
  *   - /api/export (enforce monthly cap)
  *   - Dashboard billing page
+ *   - ScrapeForm (customScrapes gate)
  *
  * When adding a plan, also:
  *   1. Create a Stripe Price in dashboard + set STRIPE_PRICE_<TIER> env var
@@ -24,7 +25,9 @@ export type Plan = {
   highlights: string[];
   features: {
     monthlyCleanLeads: number;          // hard cap used by export route
-    icpSegments: number | 'unlimited';  // how many ICPs they can run
+    /** ICP = Ideal Customer Profile — the type of business you're targeting.
+     *  e.g. "hair salons", "medspas", "restaurants", "real estate agents". */
+    icpSegments: number | 'unlimited';
     sources: ('places' | 'hunter' | 'apollo' | 'commonroom' | 'scrapingbee' | 'purchased')[];
     destinations: ('csv' | 'smartly' | 'meta_capi' | 'tiktok' | 'klaviyo_push')[];
     firstPartySync: boolean;            // shopify + klaviyo import
@@ -32,6 +35,10 @@ export type Plan = {
     scheduledScrubs: boolean;           // pg_cron nightly
     smtpVerification: boolean;          // NeverBounce/ZeroBounce
     emailEnrichment: boolean;           // Hunter.io
+    /** Custom city/query scraping via Google Places — any industry, any geography. Agency+ only. */
+    customScrapes: boolean;
+    /** Access to our pre-scraped shared database, updated nightly. */
+    inventoryAccess: boolean;
     support: 'community' | 'email' | 'priority' | 'dedicated';
     whitelabel: boolean;
     apiAccess: boolean;
@@ -50,11 +57,13 @@ export const PLANS: Record<PlanTier, Plan> = {
     name: 'Starter',
     priceMonthly: 49,
     priceYearlyPerMonth: 39,
-    tagline: 'Validate one ICP, prove the funnel.',
+    tagline: 'Prove your list before you scale.',
     highlights: [
-      '2,500 scrubbed leads / month',
-      '1 ICP segment',
-      'CSV export',
+      '2,500 verified leads / month from our pre-built database',
+      '1 ICP segment — pick your niche (salons, medspas, retailers, etc.)',
+      'Email scrubbing: syntax + MX + SMTP validation on every address',
+      'CSV export — import into any email or CRM platform',
+      'Suppression list — never re-contact existing customers or unsubs',
       'Email support',
     ],
     features: {
@@ -67,6 +76,8 @@ export const PLANS: Record<PlanTier, Plan> = {
       scheduledScrubs: false,
       smtpVerification: true,
       emailEnrichment: true,
+      customScrapes: false,
+      inventoryAccess: true,
       support: 'email',
       whitelabel: false,
       apiAccess: false,
@@ -80,13 +91,14 @@ export const PLANS: Record<PlanTier, Plan> = {
     name: 'Growth',
     priceMonthly: 199,
     priceYearlyPerMonth: 159,
-    tagline: 'The Chella plan — multi-channel activation.',
+    tagline: 'Multi-channel activation across beauty, wellness, and retail.',
     highlights: [
-      '15,000 scrubbed leads / month',
-      '4 ICP segments',
-      'smartly.io + Meta CAPI push',
-      'Shopify + Klaviyo first-party sync',
-      'Nightly re-scrub',
+      '15,000 verified leads / month',
+      '4 ICP segments — target multiple niches simultaneously',
+      'Push to smartly.io + Meta CAPI for paid-media custom audiences',
+      'Klaviyo integration — sync leads directly into your email flows',
+      'Shopify first-party sync — suppress existing customers automatically',
+      'Nightly re-scrub — leads stay fresh as email addresses change',
       'Priority support',
     ],
     features: {
@@ -99,6 +111,8 @@ export const PLANS: Record<PlanTier, Plan> = {
       scheduledScrubs: true,
       smtpVerification: true,
       emailEnrichment: true,
+      customScrapes: false,
+      inventoryAccess: true,
       support: 'priority',
       whitelabel: false,
       apiAccess: true,
@@ -112,14 +126,15 @@ export const PLANS: Record<PlanTier, Plan> = {
     name: 'Agency',
     priceMonthly: 499,
     priceYearlyPerMonth: 399,
-    tagline: 'Run OneClickitLeads for your book of clients.',
+    tagline: 'Unlimited ICPs. Custom scraping. All destinations.',
     highlights: [
-      '60,000 scrubbed leads / month',
-      'Unlimited ICP segments',
-      'All destinations (smartly, Meta, TikTok, Klaviyo)',
-      'White-label dashboard',
-      'API access',
-      'Dedicated onboarding',
+      '60,000 verified leads / month',
+      'Unlimited ICP segments — any industry, any niche',
+      'Custom scraping — any city, any query (beauty, fitness, restaurants, real estate, …)',
+      'All destinations: CSV, smartly.io, Meta CAPI, TikTok, Klaviyo',
+      'White-label dashboard — run it as your own product for clients',
+      'REST API access for custom integrations',
+      'Dedicated onboarding + priority Slack support',
     ],
     features: {
       monthlyCleanLeads: 60_000,
@@ -131,6 +146,8 @@ export const PLANS: Record<PlanTier, Plan> = {
       scheduledScrubs: true,
       smtpVerification: true,
       emailEnrichment: true,
+      customScrapes: true,
+      inventoryAccess: true,
       support: 'dedicated',
       whitelabel: true,
       apiAccess: true,
@@ -145,11 +162,14 @@ export const PLANS: Record<PlanTier, Plan> = {
     priceMonthly: 0, // custom
     tagline: 'Custom volume, DPA, SSO, deployed in your VPC.',
     highlights: [
-      'Custom lead volume',
-      'SSO / SAML',
-      'DPA + BAA on request',
-      'VPC or on-prem deploy',
-      'Named CSM',
+      'Custom lead volume — no artificial caps',
+      'Unlimited ICP segments across any industry globally',
+      'Custom scraping at scale — bulk city/niche sweeps on a schedule',
+      'All destinations + custom webhook integrations',
+      'SSO / SAML authentication',
+      'DPA + BAA available on request',
+      'VPC or on-prem deploy option',
+      'Named Customer Success Manager',
     ],
     features: {
       monthlyCleanLeads: 1_000_000,
@@ -161,6 +181,8 @@ export const PLANS: Record<PlanTier, Plan> = {
       scheduledScrubs: true,
       smtpVerification: true,
       emailEnrichment: true,
+      customScrapes: true,
+      inventoryAccess: true,
       support: 'dedicated',
       whitelabel: true,
       apiAccess: true,
@@ -175,6 +197,10 @@ export const PLAN_ORDER: PlanTier[] = ['starter', 'growth', 'agency', 'enterpris
 export function planByTier(tier: string | null | undefined): Plan {
   const t = (tier ?? 'starter') as PlanTier;
   return PLANS[t] ?? PLANS.starter;
+}
+
+export function canCustomScrape(tier: string | null | undefined): boolean {
+  return planByTier(tier).features.customScrapes;
 }
 
 export function stripePriceFor(tier: PlanTier): string | undefined {

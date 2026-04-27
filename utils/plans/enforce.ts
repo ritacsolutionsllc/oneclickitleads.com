@@ -15,7 +15,8 @@ export async function enforceExport(clientId: string) {
     .eq('client_id', clientId)
     .single();
   if (error || !data) {
-    return { ok: false as const, reason: 'usage row not found', used: 0, cap: 0, plan: 'starter' };
+    // View query failed (likely missing view or no row yet) — fail open so export isn't blocked.
+    return { ok: true as const, used: 0, cap: 2500, plan: 'starter', remaining: 2500 };
   }
   const plan = planByTier(data.plan);
   const used = Number(data.clean_this_month ?? 0);

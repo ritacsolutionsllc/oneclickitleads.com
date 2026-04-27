@@ -118,10 +118,41 @@ export default async function LeadsPage({ searchParams }: SP) {
         />
         <select name="segment" defaultValue={sp.segment ?? ''} className="rounded-lg border border-neutral-300 px-3 py-2 text-sm">
           <option value="">All segments</option>
-          <option value="b2c_beauty">b2c_beauty</option>
-          <option value="salon">salon</option>
-          <option value="influencer">influencer</option>
-          <option value="retailer">retailer</option>
+          <optgroup label="Beauty &amp; Wellness">
+            <option value="salon">Salon</option>
+            <option value="b2c_beauty">B2C Beauty brand</option>
+            <option value="medspa">Medspa</option>
+            <option value="wellness">Wellness / Spa</option>
+            <option value="influencer">Influencer</option>
+          </optgroup>
+          <optgroup label="Fitness &amp; Health">
+            <option value="fitness">Fitness / Gym</option>
+            <option value="healthcare">Healthcare</option>
+          </optgroup>
+          <optgroup label="Retail">
+            <option value="retailer">Beauty retailer</option>
+            <option value="retail">General retail</option>
+            <option value="ecommerce">E-commerce / DTC</option>
+          </optgroup>
+          <optgroup label="Food &amp; Hospitality">
+            <option value="restaurant">Restaurant / Cafe</option>
+            <option value="food_truck">Food truck / Catering</option>
+            <option value="hospitality">Hotel / Venue</option>
+          </optgroup>
+          <optgroup label="Professional Services">
+            <option value="real_estate">Real estate</option>
+            <option value="professional_services">Professional services</option>
+            <option value="marketing_agency">Marketing agency</option>
+          </optgroup>
+          <optgroup label="Home &amp; Auto">
+            <option value="home_services">Home services</option>
+            <option value="automotive">Automotive</option>
+          </optgroup>
+          <optgroup label="Other">
+            <option value="education">Education</option>
+            <option value="tech">Tech / SaaS</option>
+            <option value="nonprofit">Nonprofit</option>
+          </optgroup>
         </select>
         <select name="tier" defaultValue={tierFilter ?? ''} className="rounded-lg border border-neutral-300 px-3 py-2 text-sm">
           <option value="">All tiers</option>
