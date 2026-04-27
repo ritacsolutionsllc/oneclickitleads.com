@@ -16,7 +16,7 @@ type SP = {
 const PAGE_SIZE = 50;
 
 export default async function LeadsPage({ searchParams }: SP) {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null;
 
@@ -69,6 +69,8 @@ export default async function LeadsPage({ searchParams }: SP) {
 
   const exportLink = `/api/export?client=${active.slug}&format=csv${
     searchParams.segment ? `&segment=${searchParams.segment}` : ''
+  }${searchParams.scrubbed ? `&scrubbed=${searchParams.scrubbed}` : ''}${
+    searchParams.q ? `&q=${encodeURIComponent(searchParams.q)}` : ''
   }${searchParams.minScore ? `&min_score=${searchParams.minScore}` : ''}`;
 
   return (
@@ -79,9 +81,15 @@ export default async function LeadsPage({ searchParams }: SP) {
           <p className="text-sm text-neutral-600">{total.toLocaleString()} total · {active.name}</p>
         </div>
         <div className="flex gap-2">
-          <Link href={exportLink} className="rounded-full bg-emerald-600 text-white px-4 py-2 text-sm hover:bg-emerald-700">
-            Export filtered CSV
-          </Link>
+          {searchParams.scrubbed === '0' ? (
+            <span className="rounded-full bg-neutral-200 text-neutral-700 px-4 py-2 text-sm">
+              Export unavailable for rejected-only
+            </span>
+          ) : (
+            <Link href={exportLink} className="rounded-full bg-emerald-600 text-white px-4 py-2 text-sm hover:bg-emerald-700">
+              Export filtered CSV
+            </Link>
+          )}
         </div>
       </div>
 
@@ -96,10 +104,42 @@ export default async function LeadsPage({ searchParams }: SP) {
         />
         <select name="segment" defaultValue={searchParams.segment ?? ''} className="rounded-lg border border-neutral-300 px-3 py-2 text-sm">
           <option value="">All segments</option>
-          <option value="b2c_beauty">b2c_beauty</option>
-          <option value="salon">salon</option>
-          <option value="influencer">influencer</option>
-          <option value="retailer">retailer</option>
+          <optgroup label="Beauty &amp; Wellness">
+            <option value="salon">salon</option>
+            <option value="b2c_beauty">b2c_beauty</option>
+            <option value="medspa">medspa</option>
+            <option value="wellness">wellness</option>
+            <option value="influencer">influencer</option>
+          </optgroup>
+          <optgroup label="Fitness &amp; Health">
+            <option value="fitness">fitness</option>
+            <option value="healthcare">healthcare</option>
+            <option value="pharmacy">pharmacy</option>
+          </optgroup>
+          <optgroup label="Retail">
+            <option value="retailer">retailer</option>
+            <option value="retail">retail</option>
+            <option value="ecommerce">ecommerce</option>
+          </optgroup>
+          <optgroup label="Food &amp; Hospitality">
+            <option value="restaurant">restaurant</option>
+            <option value="food_truck">food_truck</option>
+            <option value="hospitality">hospitality</option>
+          </optgroup>
+          <optgroup label="Professional Services">
+            <option value="real_estate">real_estate</option>
+            <option value="professional_services">professional_services</option>
+            <option value="marketing_agency">marketing_agency</option>
+          </optgroup>
+          <optgroup label="Home &amp; Auto">
+            <option value="home_services">home_services</option>
+            <option value="automotive">automotive</option>
+          </optgroup>
+          <optgroup label="Other">
+            <option value="education">education</option>
+            <option value="tech">tech</option>
+            <option value="nonprofit">nonprofit</option>
+          </optgroup>
         </select>
         <select name="scrubbed" defaultValue={searchParams.scrubbed ?? ''} className="rounded-lg border border-neutral-300 px-3 py-2 text-sm">
           <option value="">Any status</option>

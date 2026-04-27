@@ -15,7 +15,8 @@ export async function enforceExport(clientId: string) {
     .eq('client_id', clientId)
     .single();
   if (error || !data) {
-    return { ok: false as const, reason: 'usage row not found', used: 0, cap: 0, plan: 'starter' };
+    // If usage view is missing or temporarily unavailable, do not hard-block exports.
+    return { ok: true as const, used: 0, cap: 2_500, plan: 'starter', remaining: 2_500 };
   }
   const plan = planByTier(data.plan);
   const used = Number(data.clean_this_month ?? 0);

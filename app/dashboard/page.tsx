@@ -5,7 +5,7 @@ import { planByTier } from '@/lib/plans';
 type SP = { searchParams: { client?: string; upgraded?: string; tier?: string } };
 
 export default async function Overview({ searchParams }: SP) {
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return null; // layout redirects
 
@@ -51,6 +51,9 @@ export default async function Overview({ searchParams }: SP) {
           <p className="text-sm text-neutral-600">/{active.slug} · {plan.name} plan · {plan.tagline}</p>
         </div>
         <div className="flex gap-2">
+          <Link href={`/dashboard/scrape?client=${active.slug}`} className="rounded-full bg-neutral-900 text-white px-4 py-2 text-sm hover:bg-black">
+            Scrape
+          </Link>
           <Link href={`/dashboard/leads?client=${active.slug}`} className="rounded-full border border-neutral-300 px-4 py-2 text-sm hover:bg-neutral-100">
             View leads →
           </Link>

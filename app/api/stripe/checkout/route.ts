@@ -3,7 +3,11 @@ import Stripe from 'stripe';
 import { createClient } from '@/utils/supabase/server';
 import { PLANS, PlanTier, stripePriceFor } from '@/lib/plans';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-09-30.acacia' });
+function getStripe() {
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (!key) return null;
+  return new Stripe(key, { apiVersion: '2025-09-30.acacia' as any });
+}
 
 /**
  * POST /api/stripe/checkout
@@ -13,6 +17,9 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, { apiVersion: '2024-09
  * to /pricing, the success_url lands them in the dashboard with a banner.
  */
 export async function POST(req: Request) {
+  const stripe = getStripe();
+  if (!stripe) return NextResponse.json({ error: 'STRIPE_SECRET_KEY not configured' }, { status: 500 });
+
   const { tier = 'growth', annual = false } = (await req.json()) as {
     tier?: PlanTier;
     annual?: boolean;
@@ -35,7 +42,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const supabase = createClient();
+  const supabase = await createClient();
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
 
