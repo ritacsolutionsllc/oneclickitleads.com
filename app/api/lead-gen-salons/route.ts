@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/utils/supabase/server';
-import { scrubEmail } from '@/utils/scrub/email';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
 
 /**
@@ -145,7 +144,18 @@ export async function GET(req: NextRequest) {
   }
 
   // ── Step 3: Scrub + score ──────────────────────────────────────────────────
-  const scrubbed = await scrubBatch(supabase as never, client.id, rows);
+  const scrubbed = await scrubBatch(
+    supabase as never,
+    client.id,
+    rows.map((r) => ({
+      ...r,
+      phone: r.phone ?? undefined,
+      company: r.company ?? undefined,
+      city: r.city ?? undefined,
+      region: r.region ?? undefined,
+      source_url: r.source_url ?? undefined,
+    }))
+  );
 
   // ── Step 4: Upsert to leads ────────────────────────────────────────────────
   const { data: source } = await supabase

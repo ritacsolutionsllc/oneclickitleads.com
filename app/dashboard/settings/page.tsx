@@ -55,7 +55,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
         <div className="flex justify-between items-start">
           <div>
             <h2 className="font-semibold">API keys</h2>
-            <p className="text-sm text-neutral-600">Use these to hit /api/ingest and /api/push/smartly from your own systems.</p>
+            <p className="text-sm text-neutral-600">Use these to hit /api/v1/leads and /api/push/smartly from your own systems.</p>
           </div>
           {!plan.features.apiAccess && (
             <span className="text-xs rounded-full bg-amber-50 text-amber-800 px-2 py-1">Growth or higher</span>

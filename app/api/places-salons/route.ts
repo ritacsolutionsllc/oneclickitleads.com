@@ -12,10 +12,18 @@ import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
  *
  * Paginates up to 3 pages (60 results). Dedupes by Google place_id and
  * feeds rows through the scrub pipeline.
+ *
+ * Auth: x-ingest-secret only. Browser users must call /api/dashboard/scrape,
+ * which verifies login, client ownership, and Agency+ plan before proxying here.
  */
 const ALLOWED_SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as const;
 
 export async function GET(request: Request) {
+  const secret = request.headers.get('x-ingest-secret');
+  if (!secret || secret !== process.env.INGEST_SECRET) {
+    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  }
+
   const { searchParams } = new URL(request.url);
   const query = (searchParams.get('query') || 'eyebrow salon Los Angeles CA').slice(0, 200);
   const clientSlug = searchParams.get('client') || 'chella';

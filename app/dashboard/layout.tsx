@@ -6,6 +6,8 @@ import DashboardNav from '@/components/DashboardNav';
 import ClientSwitcher from '@/components/ClientSwitcher';
 import SignOutButton from '@/components/SignOutButton';
 
+export const dynamic = 'force-dynamic';
+
 /**
  * Dashboard shell:
  *   Top bar: logo · client switcher · user

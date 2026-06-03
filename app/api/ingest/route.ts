@@ -6,10 +6,13 @@ import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
  * POST /api/ingest
  * Body: { client_slug: string, source: { kind, label, source_url? }, rows: RawLead[] }
  *
- * Server-only (admin client). Call from:
- *   - Apollo/Common Room import jobs
- *   - ScrapingBee/BrightData harvesters
- *   - Uploaded CSVs from the dashboard
+ * Server-only (admin client). Call from compliant, permitted sources only:
+ *   - First-party CSV/dashboard imports
+ *   - Licensed/partner data providers with permitted usage
+ *   - Owner-approved internal jobs
+ *
+ * Do not use this endpoint to bypass source terms, scrape prohibited sources,
+ * or harvest emails without a documented permission basis.
  */
 export async function POST(req: NextRequest) {
   const secret = req.headers.get('x-ingest-secret');
@@ -19,12 +22,27 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json();
   const { client_slug, source, rows } = body ?? {};
+  const sourceKind = String(source?.kind ?? 'api').toLowerCase();
+  const allowedKinds = new Set(['firstparty', 'partner', 'licensed', 'manual', 'api', 'google_places']);
   if (!client_slug || !Array.isArray(rows)) {
     return NextResponse.json({ error: 'bad request' }, { status: 400 });
   }
+  if (!allowedKinds.has(sourceKind)) {
+    return NextResponse.json(
+      { error: `source.kind must be one of: ${[...allowedKinds].join(', ')}` },
+      { status: 400 }
+    );
+  }
+  if (!source?.permission_basis || String(source.permission_basis).trim().length < 6) {
+    return NextResponse.json(
+      { error: 'source.permission_basis is required for compliance/audit trail' },
+      { status: 400 }
+    );
+  }
+
   // Bound the batch so a single request can't exhaust memory/timeout.
-  // Callers with more data should paginate; 50k already takes ~5min.
-  const MAX_ROWS = 50_000;
+  // Callers with more data should paginate.
+  const MAX_ROWS = 5_000;
   if (rows.length > MAX_ROWS) {
     return NextResponse.json(
       { error: `too many rows: ${rows.length} (max ${MAX_ROWS} per request)` },
@@ -42,7 +60,7 @@ export async function POST(req: NextRequest) {
     .from('sources')
     .insert({
       client_id: client.id,
-      kind: source?.kind ?? 'api',
+      kind: sourceKind,
       label: source?.label ?? null,
       source_url: source?.source_url ?? null,
     })
@@ -75,7 +93,7 @@ export async function POST(req: NextRequest) {
     scrub_score: s.scrub_score,
     reject_reason: s.reject_reason,
     ...scoringInsertFields(s),
-    raw: s,
+    raw: { ...s, permission_basis: source.permission_basis },
     scrubbed_at: new Date().toISOString(),
   }));
 

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 
 type Client = { id: string; name: string; slug: string; plan: string };
-type Source = 'osm' | 'places' | 'harvest' | 'enrich' | 'rescrub';
+type Source = 'places' | 'harvest' | 'enrich' | 'rescrub';
 
 const SOURCES: {
   key: Source;
@@ -12,13 +12,6 @@ const SOURCES: {
   badge: string;
   description: string;
 }[] = [
-  {
-    key: 'osm',
-    label: 'OpenStreetMap',
-    badge: 'free',
-    description:
-      'Finds beauty/salon businesses tagged in OSM by city — no API key needed. Good for long-tail SMBs that Google doesn\'t surface.',
-  },
   {
     key: 'places',
     label: 'Google Places',
@@ -50,22 +43,17 @@ const SOURCES: {
 ];
 
 const SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as const;
-const OSM_SHOPS = ['beauty', 'hairdresser', 'cosmetics', 'massage', 'optician'];
 
-export default function ScrapeForm({ clients }: { clients: Client[] }) {
+export default function ScrapeForm({ clients, activeSlug: initialActiveSlug }: { clients: Client[]; activeSlug?: string }) {
   const searchParams = useSearchParams();
-  const activeSlug = searchParams.get('client') ?? clients[0]?.slug ?? '';
+  const activeSlug = initialActiveSlug ?? searchParams.get('client') ?? clients[0]?.slug ?? '';
   const activeClient = clients.find((c) => c.slug === activeSlug) ?? clients[0];
 
-  const [source, setSource] = useState<Source>('osm');
+  const [source, setSource] = useState<Source>('places');
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // OSM
-  const [shop, setShop] = useState('beauty');
-  const [city, setCity] = useState('');
-  const [region, setRegion] = useState('');
   const [segment, setSegment] = useState<string>('salon');
 
   // Places
@@ -92,7 +80,6 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
       source,
       client_slug: activeClient?.slug ?? activeSlug,
     };
-    if (source === 'osm') Object.assign(body, { shop, city, region, segment });
     if (source === 'places') Object.assign(body, { query, segment });
     if (source === 'harvest') Object.assign(body, { limit });
     if (source === 'enrich') Object.assign(body, { batch_size: batchSize });
@@ -159,42 +146,6 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
         </div>
 
         <div className="grid gap-4 max-w-lg">
-          {source === 'osm' && (
-            <>
-              <Field label="Shop type">
-                <select
-                  className={inp}
-                  value={shop}
-                  onChange={(e) => setShop(e.target.value)}
-                >
-                  {OSM_SHOPS.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="City">
-                  <input
-                    className={inp}
-                    value={city}
-                    onChange={(e) => setCity(e.target.value)}
-                    placeholder="Los Angeles"
-                  />
-                </Field>
-                <Field label="State / Region">
-                  <input
-                    className={inp}
-                    value={region}
-                    onChange={(e) => setRegion(e.target.value)}
-                    placeholder="CA"
-                  />
-                </Field>
-              </div>
-              <SegmentField value={segment} onChange={setSegment} />
-            </>
-          )}
 
           {source === 'places' && (
             <>

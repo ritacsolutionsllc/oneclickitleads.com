@@ -81,7 +81,10 @@ export async function POST(req: NextRequest) {
       const query = String(body.query ?? '').slice(0, 200);
       if (!query) return NextResponse.json({ error: 'query is required for Places' }, { status: 400 });
       const qs = new URLSearchParams({ client: clientSlug, query, segment });
-      res = await fetch(`${origin}/api/places-salons?${qs}`, { signal: AbortSignal.timeout(55_000) });
+      res = await fetch(`${origin}/api/places-salons?${qs}`, {
+        headers: { 'x-ingest-secret': secret },
+        signal: AbortSignal.timeout(55_000),
+      });
     } else if (source === 'harvest') {
       const limit = Math.min(200, Math.max(1, Number(body.limit ?? 50)));
       res = await fetch(`${origin}/api/harvest-emails`, {

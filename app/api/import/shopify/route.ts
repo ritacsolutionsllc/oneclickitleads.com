@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createAdminClient } from '@/utils/supabase/server';
+import { createAdminClient, createClient } from '@/utils/supabase/server';
 import Papa from 'papaparse';
 import { normalizeEmail } from '@/utils/scrub/email';
 import { normalizePhone } from '@/utils/scrub/phone';
@@ -22,6 +22,10 @@ import { assignTier } from '@/utils/scoring/tier';
  * Why "suppression" mode matters: any dollar we spend on smartly.io acquiring
  * a lead Chella already owns is wasted. The suppressions table is joined on
  * export so these rows never leave the building.
+ *
+ * Auth:
+ *   - logged-in owner of client_slug, OR
+ *   - x-ingest-secret for trusted server-to-server jobs
  */
 export async function POST(req: NextRequest) {
   const form = await req.formData();
@@ -32,15 +36,36 @@ export async function POST(req: NextRequest) {
   if (!(file instanceof File)) return NextResponse.json({ error: 'file required' }, { status: 400 });
   if (!clientSlug)             return NextResponse.json({ error: 'client_slug required' }, { status: 400 });
 
+  if (!['suppression', 'seed', 'both'].includes(mode)) {
+    return NextResponse.json({ error: 'mode must be suppression, seed, or both' }, { status: 400 });
+  }
+
+  if (file.size > 5 * 1024 * 1024) {
+    return NextResponse.json({ error: 'file too large; max 5MB' }, { status: 413 });
+  }
+
   const text = await file.text();
   const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true });
   if (parsed.errors.length)
     return NextResponse.json({ error: 'CSV parse', details: parsed.errors.slice(0, 3) }, { status: 400 });
 
+  if (parsed.data.length > 10_000) {
+    return NextResponse.json({ error: 'too many rows; max 10,000 per import' }, { status: 413 });
+  }
+
   const supabase = createAdminClient();
   const { data: client } = await supabase
-    .from('clients').select('id').eq('slug', clientSlug).single();
+    .from('clients').select('id, owner_user').eq('slug', clientSlug).single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
+
+  const ingestSecret = req.headers.get('x-ingest-secret');
+  const trustedServerJob = Boolean(ingestSecret && ingestSecret === process.env.INGEST_SECRET);
+  if (!trustedServerJob) {
+    const userClient = await createClient();
+    const { data: { user } } = await userClient.auth.getUser();
+    if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    if (client.owner_user !== user.id) return NextResponse.json({ error: 'not found' }, { status: 404 });
+  }
 
   const { data: src } = await supabase
     .from('sources')
@@ -53,7 +78,7 @@ export async function POST(req: NextRequest) {
     })
     .select('id').single();
 
-  const rows = parsed.data.filter((r) => r['Email']);
+  const rows = parsed.data.filter((r) => r['Email'] && normalizeEmail(r['Email']));
 
   const suppressionRows = rows.map((r) => ({
     client_id: client.id,
@@ -137,7 +162,9 @@ export async function POST(req: NextRequest) {
   let seeded = 0;
 
   if (mode === 'suppression' || mode === 'both') {
-    const { error } = await supabase.from('suppressions').insert(suppressionRows);
+    const { error } = await supabase
+      .from('suppressions')
+      .upsert(suppressionRows, { onConflict: 'client_id,email', ignoreDuplicates: true });
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     suppressed = suppressionRows.length;
   }
