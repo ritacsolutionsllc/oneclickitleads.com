@@ -95,7 +95,7 @@ export async function GET(req: NextRequest) {
   let q = supabase
     .from('leads')
     .select(
-      'email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, composite_score, export_tier, scrub_score'
+      'email, first_name, last_name, phone_e164, company, title, icp_segment, city, region, country, composite_score, export_tier, scrub_score, tags, raw'
     )
     .eq('client_id', client.id)
     .eq('is_scrubbed', true)
@@ -108,7 +108,27 @@ export async function GET(req: NextRequest) {
   const { data: leads, error } = await q;
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  const rows = leads ?? [];
+  // Remap to flat CSV-friendly shape; extract website from raw JSONB
+  const rows = (leads ?? []).map((r) => {
+    const raw = r.raw as { source_url?: string } | null;
+    return {
+      email: r.email,
+      first_name: r.first_name,
+      last_name: r.last_name,
+      phone: r.phone_e164,
+      company: r.company,
+      title: r.title,
+      icp_segment: r.icp_segment,
+      city: r.city,
+      region: r.region,
+      country: r.country,
+      website: raw?.source_url ?? null,
+      tags: Array.isArray(r.tags) ? (r.tags as string[]).join(', ') : null,
+      composite_score: r.composite_score,
+      export_tier: r.export_tier,
+      scrub_score: r.scrub_score,
+    };
+  });
 
   await supabase.from('exports').insert({
     client_id: client.id,
