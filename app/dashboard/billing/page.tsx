@@ -1,6 +1,6 @@
 import { createClient } from '@/utils/supabase/server';
 import Link from 'next/link';
-import { planByTier, displayPlans, PLANS } from '@/lib/plans';
+import { planByTier, displayPlans } from '@/lib/plans';
 import PortalButton from '@/components/PortalButton';
 import SubscribeButton from '@/components/SubscribeButton';
 import { isAdminEmail } from '@/utils/admin';

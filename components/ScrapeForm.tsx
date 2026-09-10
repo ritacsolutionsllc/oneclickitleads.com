@@ -4,74 +4,72 @@ import { useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 
 type Client = { id: string; name: string; slug: string; plan: string };
-type Source = 'osm' | 'places' | 'harvest' | 'enrich' | 'rescrub';
+type Source = 'places' | 'harvest' | 'enrich' | 'rescrub';
 
-const SOURCES: {
-  key: Source;
-  label: string;
-  badge: string;
-  description: string;
-}[] = [
-  {
-    key: 'osm',
-    label: 'OpenStreetMap',
-    badge: 'free',
-    description:
-      'Finds beauty/salon businesses tagged in OSM by city — no API key needed. Good for long-tail SMBs that Google doesn\'t surface.',
-  },
+const SOURCES: { key: Source; label: string; description: string; envHint?: string }[] = [
   {
     key: 'places',
     label: 'Google Places',
-    badge: 'GOOGLE_PLACES_API_KEY',
-    description:
-      'Text-search Google Places and pull phone, website, and address in one round-trip. Up to 60 results per query.',
+    description: 'Search Google Places for beauty businesses by city or query. Up to 60 results per run.',
+    envHint: 'GOOGLE_PLACES_API_KEY',
   },
   {
     key: 'harvest',
     label: 'Harvest Emails',
-    badge: 'free',
-    description:
-      'Crawl existing leads\' websites for contact emails — catches long-tail salons whose emails aren\'t in Hunter.',
+    description: "Crawl existing leads' websites for contact emails — catches long-tail businesses not in Hunter.",
+    envHint: 'INGEST_SECRET',
   },
   {
     key: 'enrich',
     label: 'Enrich via Hunter',
-    badge: 'HUNTER_API_KEY',
-    description:
-      'For leads that have a website but no email, query Hunter.io domain search and write the top verified result back.',
+    description: 'For leads with a website but no email, query Hunter.io domain search and write the top verified result back.',
+    envHint: 'HUNTER_API_KEY + INGEST_SECRET',
   },
   {
     key: 'rescrub',
     label: 'Scrub List',
-    badge: 'free',
-    description:
-      'Validate emails, deduplicate, score, and tier all pending leads — run this after harvesting to make leads exportable.',
+    description: 'Validate emails, deduplicate, score, and tier all pending leads — run after harvesting to make leads exportable.',
   },
 ];
 
-const SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as const;
-const OSM_SHOPS = ['beauty', 'hairdresser', 'cosmetics', 'massage', 'optician'];
+// Quick-start query presets for beauty ICP
+const BEAUTY_PRESETS: { label: string; query: string }[] = [
+  { label: 'Hair salons', query: 'hair salon' },
+  { label: 'Nail salons', query: 'nail salon' },
+  { label: 'Brow & lash bars', query: 'brow bar lash studio' },
+  { label: 'Medspas', query: 'medspa medical spa' },
+  { label: 'Skincare studios', query: 'skincare studio esthetician' },
+  { label: 'Beauty supply', query: 'beauty supply store' },
+  { label: 'Makeup artists', query: 'makeup artist studio' },
+  { label: 'Massage & wellness', query: 'massage spa wellness center' },
+  { label: 'Barbershops', query: 'barbershop barber' },
+  { label: 'Cosmetics retail', query: 'cosmetics beauty retailer' },
+];
 
-export default function ScrapeForm({ clients }: { clients: Client[] }) {
+const SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as const;
+
+export default function ScrapeForm({
+  clients,
+  activeSlug: activeSlugProp,
+}: {
+  clients: Client[];
+  activeSlug?: string;
+}) {
   const searchParams = useSearchParams();
-  const activeSlug = searchParams.get('client') ?? clients[0]?.slug ?? '';
+  const activeSlug = activeSlugProp ?? searchParams.get('client') ?? clients[0]?.slug ?? '';
   const activeClient = clients.find((c) => c.slug === activeSlug) ?? clients[0];
 
-  const [source, setSource] = useState<Source>('osm');
+  const [source, setSource] = useState<Source>('places');
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // OSM
-  const [shop, setShop] = useState('beauty');
-  const [city, setCity] = useState('');
-  const [region, setRegion] = useState('');
-  const [segment, setSegment] = useState<string>('salon');
-
   // Places
   const [query, setQuery] = useState('');
+  const [city, setCity] = useState('');
+  const [segment, setSegment] = useState<string>('salon');
 
-  // Harvest
+  // Harvest / Rescrub
   const [limit, setLimit] = useState(50);
 
   // Enrich
@@ -83,17 +81,23 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
     setError(null);
   }
 
+  function applyPreset(preset: { query: string }) {
+    setQuery(city ? `${preset.query} ${city}` : preset.query);
+  }
+
   async function run() {
     setRunning(true);
     setResult(null);
     setError(null);
 
-    const body: Record<string, unknown> = {
-      source,
-      client_slug: activeClient?.slug ?? activeSlug,
-    };
-    if (source === 'osm') Object.assign(body, { shop, city, region, segment });
-    if (source === 'places') Object.assign(body, { query, segment });
+    const slug = activeClient?.slug ?? activeSlug;
+    const body: Record<string, unknown> = { source, client_slug: slug };
+
+    if (source === 'places') {
+      const q = city ? `${query} ${city}`.trim() : query.trim();
+      if (!q) { setError('Enter a search query or pick a preset.'); setRunning(false); return; }
+      Object.assign(body, { query: q, segment });
+    }
     if (source === 'harvest') Object.assign(body, { limit });
     if (source === 'enrich') Object.assign(body, { batch_size: batchSize });
     if (source === 'rescrub') Object.assign(body, { limit });
@@ -114,6 +118,8 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
     }
   }
 
+  const activeSource = SOURCES.find((s) => s.key === source)!;
+
   return (
     <div className="space-y-6">
       {/* Source selector */}
@@ -128,18 +134,10 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
                 : 'border-neutral-200 bg-white hover:border-neutral-300'
             }`}
           >
-            <div className="flex items-start justify-between gap-2">
-              <div className="font-medium text-sm">{s.label}</div>
-              <span
-                className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${
-                  s.badge === 'free'
-                    ? 'bg-emerald-100 text-emerald-800'
-                    : 'bg-amber-50 text-amber-800'
-                }`}
-              >
-                {s.badge === 'free' ? 'free' : 'key req.'}
-              </span>
-            </div>
+            <div className="font-medium text-sm">{s.label}</div>
+            {s.envHint && (
+              <div className="mt-0.5 text-xs text-amber-700 font-mono">{s.envHint}</div>
+            )}
             <p className="mt-1.5 text-xs text-neutral-500 leading-relaxed line-clamp-2">
               {s.description}
             </p>
@@ -149,64 +147,59 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
 
       {/* Config form */}
       <div className="rounded-xl border border-neutral-200 bg-white p-6">
-        <div className="flex items-center justify-between mb-5">
-          <div>
-            <div className="font-medium">{SOURCES.find((s) => s.key === source)?.label}</div>
-            <div className="text-xs text-neutral-500 mt-0.5">
-              Target: <strong>{activeClient?.name ?? activeSlug}</strong>
-            </div>
+        <div className="mb-5">
+          <div className="font-medium">{activeSource.label}</div>
+          <div className="text-xs text-neutral-500 mt-0.5">
+            Target: <strong>{activeClient?.name ?? activeSlug}</strong>
           </div>
         </div>
 
-        <div className="grid gap-4 max-w-lg">
-          {source === 'osm' && (
+        <div className="grid gap-4 max-w-xl">
+          {source === 'places' && (
             <>
-              <Field label="Shop type">
-                <select
-                  className={inp}
-                  value={shop}
-                  onChange={(e) => setShop(e.target.value)}
-                >
-                  {OSM_SHOPS.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
-                    </option>
+              {/* Category presets */}
+              <div>
+                <div className="text-xs font-medium text-neutral-500 uppercase tracking-wider mb-2">
+                  Quick presets
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {BEAUTY_PRESETS.map((p) => (
+                    <button
+                      key={p.query}
+                      type="button"
+                      onClick={() => applyPreset(p)}
+                      className="rounded-full border border-neutral-200 bg-neutral-50 px-3 py-1 text-xs hover:border-emerald-400 hover:bg-emerald-50 hover:text-emerald-800 transition"
+                    >
+                      {p.label}
+                    </button>
                   ))}
-                </select>
-              </Field>
+                </div>
+              </div>
+
               <div className="grid grid-cols-2 gap-3">
-                <Field label="City">
+                <Field label="Business type / query" hint="e.g. nail salon, medspa">
+                  <input
+                    className={inp}
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder="nail salon"
+                  />
+                </Field>
+                <Field label="City" hint="e.g. Los Angeles CA">
                   <input
                     className={inp}
                     value={city}
                     onChange={(e) => setCity(e.target.value)}
-                    placeholder="Los Angeles"
-                  />
-                </Field>
-                <Field label="State / Region">
-                  <input
-                    className={inp}
-                    value={region}
-                    onChange={(e) => setRegion(e.target.value)}
-                    placeholder="CA"
+                    placeholder="Los Angeles CA"
                   />
                 </Field>
               </div>
               <SegmentField value={segment} onChange={setSegment} />
-            </>
-          )}
-
-          {source === 'places' && (
-            <>
-              <Field label="Search query" hint="e.g. eyebrow salon Los Angeles CA">
-                <input
-                  className={inp}
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="eyebrow salon Los Angeles CA"
-                />
-              </Field>
-              <SegmentField value={segment} onChange={setSegment} />
+              {query && (
+                <p className="text-xs text-neutral-400">
+                  Will search: <em>&quot;{city ? `${query} ${city}` : query}&quot;</em> — up to 60 results
+                </p>
+              )}
             </>
           )}
 
@@ -249,8 +242,8 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
                 />
               </Field>
               <p className="text-xs text-neutral-500 leading-relaxed">
-                Picks up leads that have an email but are still marked <em>pending</em> — validates emails, removes
-                duplicates, scores each lead, and assigns an export tier so they appear in CSV exports.
+                Picks up leads that have an email but are still marked <em>pending</em> — validates,
+                deduplicates, scores, and assigns an export tier so they appear in CSV exports.
               </p>
             </>
           )}
@@ -266,7 +259,7 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
                 Running…
               </span>
             ) : (
-              `Run ${SOURCES.find((s) => s.key === source)?.label}`
+              `Run ${activeSource.label}`
             )}
           </button>
         </div>
@@ -277,19 +270,21 @@ export default function ScrapeForm({ clients }: { clients: Client[] }) {
         <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-5">
           <div className="font-medium text-emerald-900 mb-3">Complete</div>
           <div className="grid sm:grid-cols-3 gap-3 mb-4">
-            {(['inserted', 'skipped', 'errors', 'processed', 'clean', 'rejected'] as const).map((k) =>
-              result[k] != null ? (
+            {(
+              ['fetched', 'ingested', 'inserted', 'clean', 'enriched', 'updated', 'processed', 'checked', 'skipped', 'rejected'] as const
+            ).map((k) =>
+              (result as Record<string, unknown>)[k] != null ? (
                 <div key={k} className="rounded-lg bg-white border border-emerald-200 p-3 text-center">
-                  <div className="text-2xl font-semibold text-emerald-800">{String(result[k])}</div>
+                  <div className="text-2xl font-semibold text-emerald-800">
+                    {String((result as Record<string, unknown>)[k])}
+                  </div>
                   <div className="text-xs text-neutral-500 capitalize mt-0.5">{k}</div>
                 </div>
               ) : null,
             )}
           </div>
           <details className="text-xs">
-            <summary className="cursor-pointer text-emerald-700 hover:underline">
-              Raw response
-            </summary>
+            <summary className="cursor-pointer text-emerald-700 hover:underline">Raw response</summary>
             <pre className="mt-2 overflow-auto rounded bg-white border border-emerald-200 p-3 text-neutral-700">
               {JSON.stringify(result, null, 2)}
             </pre>
@@ -329,13 +324,7 @@ function Field({
   );
 }
 
-function SegmentField({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-}) {
+function SegmentField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <Field label="ICP Segment">
       <select className={inp} value={value} onChange={(e) => onChange(e.target.value)}>
