@@ -211,7 +211,7 @@ export function tierForStripePriceId(priceId: string | null | undefined): PlanTi
   for (const tier of PLAN_ORDER) {
     const envName = PLANS[tier].stripePriceEnv;
     if (!envName) continue;
-    if (process.env[envName] === priceId) return tier;
+    if (process.env[envName] === priceId || process.env[`${envName}_ANNUAL`] === priceId) return tier;
   }
   return 'starter';
 }
