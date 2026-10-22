@@ -3,8 +3,7 @@ import { createClient, createAdminClient } from '@/utils/supabase/server';
 
 /**
  * Dashboard-facing proxy to /api/push/smartly.
- * Verifies the user owns the client, then calls the S2S endpoint with
- * the INGEST_SECRET server-side so we never expose it to the browser.
+ * Verifies the user owns the client, then forwards the session cookie.
  */
 export async function POST(req: NextRequest) {
   const supabase = await createClient();
@@ -27,11 +26,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'not your client' }, { status: 403 });
 
   // Proxy
-  const resp = await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/push/smartly`, {
+  const resp = await fetch(`${new URL(req.url).origin}/api/push/smartly`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-ingest-secret': process.env.INGEST_SECRET ?? '',
+      cookie: req.headers.get('cookie') ?? '',
     },
     body: JSON.stringify(body),
   });

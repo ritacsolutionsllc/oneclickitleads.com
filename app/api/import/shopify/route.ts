@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireClientAccess } from '@/utils/auth/client-access';
 import { createAdminClient } from '@/utils/supabase/server';
 import Papa from 'papaparse';
 import { normalizeEmail } from '@/utils/scrub/email';
@@ -31,6 +32,9 @@ export async function POST(req: NextRequest) {
 
   if (!(file instanceof File)) return NextResponse.json({ error: 'file required' }, { status: 400 });
   if (!clientSlug)             return NextResponse.json({ error: 'client_slug required' }, { status: 400 });
+
+  const access = await requireClientAccess(req, clientSlug);
+  if (!access.ok) return access.response;
 
   const text = await file.text();
   const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true });

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireClientAccess } from '@/utils/auth/client-access';
+import { fetchPublicText } from '@/utils/net/public-url';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubEmail } from '@/utils/scrub/email';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
@@ -13,8 +15,7 @@ import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
  *   4. Run full scrub pipeline (dedupe, suppression, scoring, tier)
  *   5. Upsert into leads table
  *
- * Auth: x-ingest-secret header (add INGEST_SECRET to Vercel env vars).
- * This endpoint is server-to-server / cron safe — no browser session needed.
+ * Auth: per-client API key (x-api-key or x-ingest-secret) or an owning session.
  */
 
 const VALID_SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as const;
@@ -34,11 +35,6 @@ const JUNK_DOMAINS = new Set([
 const JUNK_LOCAL = new Set(['noreply', 'no-reply', 'donotreply', 'postmaster']);
 
 export async function GET(req: NextRequest) {
-  // Auth — server-side only, never exposed to browser
-  const secret = req.headers.get('x-ingest-secret');
-  if (secret !== process.env.INGEST_SECRET)
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-
   const { searchParams } = new URL(req.url);
   const city = searchParams.get('city')?.slice(0, 100) ?? '';
   const clientSlug = searchParams.get('client')?.slice(0, 64) ?? '';
@@ -49,6 +45,9 @@ export async function GET(req: NextRequest) {
 
   if (!city) return NextResponse.json({ error: 'city is required' }, { status: 400 });
   if (!clientSlug) return NextResponse.json({ error: 'client is required' }, { status: 400 });
+
+  const access = await requireClientAccess(req, clientSlug, { requireScrapePlan: true });
+  if (!access.ok) return access.response;
 
   const placesKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!placesKey)
@@ -294,19 +293,7 @@ function pickBestEmail(emails: string[], siteBase: string): string | undefined {
 }
 
 async function fetchText(url: string): Promise<string | null> {
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 7000);
-    const resp = await fetch(url, {
-      signal: ctrl.signal,
-      headers: { 'User-Agent': 'OneClickitLeadsBot/1.0 (+https://oneclickitleads.com)', Accept: 'text/html' },
-    });
-    clearTimeout(t);
-    if (!resp.ok) return null;
-    const ct = resp.headers.get('content-type') ?? '';
-    if (!ct.includes('html') && !ct.includes('text')) return null;
-    return (await resp.text()).slice(0, 300_000);
-  } catch { return null; }
+  return fetchPublicText(url, { timeoutMs: 7000, maxBytes: 300_000 });
 }
 
 function componentOf(comps: PlaceResult['addressComponents'], types: string[]) {

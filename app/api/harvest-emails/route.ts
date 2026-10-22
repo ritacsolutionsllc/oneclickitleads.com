@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireClientAccess } from '@/utils/auth/client-access';
+import { fetchPublicText } from '@/utils/net/public-url';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubEmail } from '@/utils/scrub/email';
 
@@ -33,12 +35,9 @@ const JUNK_DOMAINS = new Set([
 const JUNK_LOCAL = new Set(['noreply', 'no-reply', 'donotreply', 'mailer-daemon', 'postmaster']);
 
 export async function POST(req: NextRequest) {
-  const secret = req.headers.get('x-ingest-secret');
-  if (secret !== process.env.INGEST_SECRET)
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-
   const { client_slug, limit = 50, segment } = await req.json();
-  if (!client_slug) return NextResponse.json({ error: 'client_slug required' }, { status: 400 });
+  const access = await requireClientAccess(req, String(client_slug ?? ''));
+  if (!access.ok) return access.response;
 
   const supabase = createAdminClient();
   const { data: client } = await supabase
@@ -193,23 +192,5 @@ function normalizeUrl(u: string): string | null {
 }
 
 async function fetchText(url: string): Promise<string | null> {
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 8000);
-    const resp = await fetch(url, {
-      signal: ctrl.signal,
-      redirect: 'follow',
-      headers: {
-        'User-Agent': 'OneClickitLeadsBot/1.0 (+https://oneclickitleads.com)',
-        Accept: 'text/html,application/xhtml+xml',
-      },
-    });
-    clearTimeout(t);
-    if (!resp.ok) return null;
-    const ct = resp.headers.get('content-type') || '';
-    if (!ct.includes('html') && !ct.includes('text')) return null;
-    return (await resp.text()).slice(0, 500_000); // cap at 500KB
-  } catch {
-    return null;
-  }
+  return fetchPublicText(url, { timeoutMs: 8000, maxBytes: 500_000 });
 }

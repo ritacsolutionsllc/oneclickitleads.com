@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireClientAccess } from '@/utils/auth/client-access';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubEmail } from '@/utils/scrub/email';
 
@@ -11,11 +12,9 @@ import { scrubEmail } from '@/utils/scrub/email';
  * Run /api/dashboard/rescrub afterward to run the full scrub pipeline.
  */
 export async function POST(req: NextRequest) {
-  const secret = req.headers.get('x-ingest-secret');
-  if (secret !== process.env.INGEST_SECRET)
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-
   const { client_slug, batch_size = 100 } = await req.json();
+  const access = await requireClientAccess(req, String(client_slug ?? ''));
+  if (!access.ok) return access.response;
   const hunter = process.env.HUNTER_API_KEY;
   if (!hunter) return NextResponse.json({ error: 'HUNTER_API_KEY not set — add it in Vercel env vars' }, { status: 500 });
 
