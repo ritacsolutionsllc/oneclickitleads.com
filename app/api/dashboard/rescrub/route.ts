@@ -1,14 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient, createAdminClient } from '@/utils/supabase/server';
+import { requireClientAccess } from '@/utils/auth/client-access';
+import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
 
 /**
  * POST /api/dashboard/rescrub
  *   body: { client_slug: string, limit?: number }
  *
- * Accepts two auth methods:
- *   1. Cookie-based Supabase session (browser / dashboard UI)
- *   2. x-ingest-secret header (forwarded from /api/dashboard/scrape proxy)
+ * Accepts an owning session or a per-client API key.
  *
  * Finds leads that have an email but haven't been fully scrubbed yet
  * (is_scrubbed IS NULL or false), runs them through the full scrub +
@@ -21,26 +20,10 @@ export async function POST(req: NextRequest) {
 
   if (!clientSlug) return NextResponse.json({ error: 'client_slug required' }, { status: 400 });
 
+  const access = await requireClientAccess(req, clientSlug);
+  if (!access.ok) return access.response;
+
   const admin = createAdminClient();
-
-  // Auth: accept ingest secret OR user session
-  const ingestSecret = req.headers.get('x-ingest-secret');
-  const useSecret = ingestSecret && ingestSecret === process.env.INGEST_SECRET;
-
-  if (!useSecret) {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-
-    // Verify ownership via user-scoped client
-    const { data: owned } = await supabase
-      .from('clients')
-      .select('id')
-      .eq('slug', clientSlug)
-      .eq('owner_user', user.id)
-      .single();
-    if (!owned) return NextResponse.json({ error: 'client not found' }, { status: 404 });
-  }
 
   const { data: clientRow } = await admin
     .from('clients')

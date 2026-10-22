@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireClientAccess } from '@/utils/auth/client-access';
+import { resolvePublicUrl } from '@/utils/net/public-url';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
 
 /**
  * POST /api/scrape-webscrapingai
- *   headers: { x-ingest-secret: $INGEST_SECRET }
+ *   headers: { x-api-key: <per-client key> }
  *   body: {
  *     client_slug: string;
  *     urls: string[];                        // pages to render + extract
@@ -39,15 +41,6 @@ const JUNK_DOMAINS = new Set([
 const JUNK_LOCAL = new Set(['noreply', 'no-reply', 'donotreply', 'mailer-daemon', 'postmaster']);
 
 export async function POST(req: NextRequest) {
-  const secret = req.headers.get('x-ingest-secret');
-  if (secret !== process.env.INGEST_SECRET)
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-
-  const rawApiKey = process.env.WEBSCRAPINGAI_API_KEY;
-  if (!rawApiKey)
-    return NextResponse.json({ error: 'WEBSCRAPINGAI_API_KEY is not set' }, { status: 500 });
-  const apiKey: string = rawApiKey;
-
   const body = await req.json().catch(() => ({}));
   const {
     client_slug,
@@ -65,8 +58,14 @@ export async function POST(req: NextRequest) {
     proxy?: 'datacenter' | 'residential';
   };
 
-  if (!client_slug)
-    return NextResponse.json({ error: 'client_slug required' }, { status: 400 });
+  const access = await requireClientAccess(req, String(client_slug ?? ''));
+  if (!access.ok) return access.response;
+
+  const rawApiKey = process.env.WEBSCRAPINGAI_API_KEY;
+  if (!rawApiKey)
+    return NextResponse.json({ error: 'WEBSCRAPINGAI_API_KEY is not set' }, { status: 500 });
+  const apiKey: string = rawApiKey;
+
   if (!Array.isArray(urls) || urls.length === 0)
     return NextResponse.json({ error: 'urls[] required' }, { status: 400 });
   if (urls.length > 50)
@@ -76,7 +75,7 @@ export async function POST(req: NextRequest) {
   const { data: client } = await supabase
     .from('clients')
     .select('id')
-    .eq('slug', client_slug)
+    .eq('slug', access.slug)
     .single();
   if (!client) return NextResponse.json({ error: 'unknown client' }, { status: 404 });
 
@@ -102,18 +101,20 @@ export async function POST(req: NextRequest) {
       const url = queue.shift();
       if (!url) break;
       const normalized = normalizeUrl(url);
-      if (!normalized) {
-        errors.push({ url, error: 'invalid url' });
+      const publicUrl = normalized ? await resolvePublicUrl(normalized) : null;
+      if (!publicUrl) {
+        errors.push({ url, error: 'url is not a public http(s) address' });
         continue;
       }
       try {
-        const row = await scrapeOne(normalized, { apiKey, js_timeout, timeout, proxy });
+        const target = publicUrl.toString();
+        const row = await scrapeOne(target, { apiKey, js_timeout, timeout, proxy });
         if (row) {
           row.icp_segment = segment;
           rows.push(row);
         }
       } catch (e) {
-        errors.push({ url: normalized, error: (e as Error).message });
+        errors.push({ url: publicUrl.toString(), error: (e as Error).message });
       }
     }
   }

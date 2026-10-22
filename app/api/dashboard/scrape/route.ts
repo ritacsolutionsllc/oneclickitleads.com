@@ -59,7 +59,10 @@ export async function POST(req: NextRequest) {
   // ─────────────────────────────────────────────────────────────────────────
 
   const origin = new URL(req.url).origin;
-  const secret = process.env.INGEST_SECRET ?? '';
+  const forwardHeaders = {
+    'content-type': 'application/json',
+    cookie: req.headers.get('cookie') ?? '',
+  };
   const segment = VALID_SEGMENTS.includes(body.segment) ? body.segment : 'salon';
   const admin = createAdminClient();
 
@@ -81,12 +84,15 @@ export async function POST(req: NextRequest) {
       const query = String(body.query ?? '').slice(0, 200);
       if (!query) return NextResponse.json({ error: 'query is required for Places' }, { status: 400 });
       const qs = new URLSearchParams({ client: clientSlug, query, segment });
-      res = await fetch(`${origin}/api/places-salons?${qs}`, { signal: AbortSignal.timeout(55_000) });
+      res = await fetch(`${origin}/api/places-salons?${qs}`, {
+        headers: { cookie: forwardHeaders.cookie },
+        signal: AbortSignal.timeout(55_000),
+      });
     } else if (source === 'harvest') {
       const limit = Math.min(200, Math.max(1, Number(body.limit ?? 50)));
       res = await fetch(`${origin}/api/harvest-emails`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-ingest-secret': secret },
+        headers: forwardHeaders,
         body: JSON.stringify({ client_slug: clientSlug, limit }),
         signal: AbortSignal.timeout(55_000),
       });
@@ -94,7 +100,7 @@ export async function POST(req: NextRequest) {
       const batchSize = Math.min(200, Math.max(1, Number(body.batch_size ?? 100)));
       res = await fetch(`${origin}/api/enrich`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-ingest-secret': secret },
+        headers: forwardHeaders,
         body: JSON.stringify({ client_slug: clientSlug, batch_size: batchSize }),
         signal: AbortSignal.timeout(55_000),
       });
@@ -102,7 +108,7 @@ export async function POST(req: NextRequest) {
       const limit = Math.min(500, Math.max(1, Number(body.limit ?? 100)));
       res = await fetch(`${origin}/api/dashboard/rescrub`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-ingest-secret': secret },
+        headers: forwardHeaders,
         body: JSON.stringify({ client_slug: clientSlug, limit }),
         signal: AbortSignal.timeout(55_000),
       });

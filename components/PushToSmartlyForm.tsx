@@ -17,7 +17,7 @@ export default function PushToSmartlyForm({ clientSlug }: { clientSlug: string }
     setRunning(true);
     setResult(null);
     try {
-      // Calls the dashboard proxy which injects INGEST_SECRET + verifies
+      // Calls the dashboard proxy, which checks ownership and forwards the session.
       // ownership before hitting the S2S push endpoint.
       const res = await fetch('/api/dashboard/push-smartly', {
         method: 'POST',

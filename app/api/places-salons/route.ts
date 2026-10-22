@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { requireClientAccess } from '@/utils/auth/client-access';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
 
@@ -17,15 +18,20 @@ const ALLOWED_SEGMENTS = ['salon', 'b2c_beauty', 'influencer', 'retailer'] as co
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const query = (searchParams.get('query') || 'eyebrow salon Los Angeles CA').slice(0, 200);
-  const clientSlug = searchParams.get('client') || 'chella';
+  const query = (searchParams.get('query') || '').slice(0, 200);
+  const clientSlug = (searchParams.get('client') || '').slice(0, 64);
   const segment = searchParams.get('segment') || 'salon';
+  if (!query) return NextResponse.json({ error: 'query required' }, { status: 400 });
+  if (!clientSlug) return NextResponse.json({ error: 'client required' }, { status: 400 });
   if (!(ALLOWED_SEGMENTS as readonly string[]).includes(segment)) {
     return NextResponse.json(
       { error: `segment must be one of ${ALLOWED_SEGMENTS.join(', ')}` },
       { status: 400 }
     );
   }
+  const access = await requireClientAccess(request, clientSlug, { requireScrapePlan: true });
+  if (!access.ok) return access.response;
+
   const key = process.env.GOOGLE_PLACES_API_KEY;
   if (!key) return NextResponse.json({ error: 'missing GOOGLE_PLACES_API_KEY' }, { status: 500 });
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireClientAccess } from '@/utils/auth/client-access';
 import { createAdminClient } from '@/utils/supabase/server';
 
 /**
@@ -32,10 +33,6 @@ const SMARTLY_BASE           = process.env.SMARTLY_API_BASE || 'https://api.smar
 const SMARTLY_AUDIENCE_PATH  = process.env.SMARTLY_AUDIENCE_PATH || '/custom_audiences';
 
 export async function POST(req: NextRequest) {
-  const secret = req.headers.get('x-ingest-secret');
-  if (secret !== process.env.INGEST_SECRET)
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-
   const {
     client_slug,
     audience_name = `OneClickitLeads export ${new Date().toISOString().slice(0, 10)}`,
@@ -43,6 +40,9 @@ export async function POST(req: NextRequest) {
     segment,
     min_score = 60,
   } = await req.json();
+
+  const access = await requireClientAccess(req, String(client_slug ?? ''));
+  if (!access.ok) return access.response;
 
   const token   = process.env.SMARTLY_API_TOKEN;
   const account = process.env.SMARTLY_ACCOUNT_ID;

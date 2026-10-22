@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { requireClientAccess } from '@/utils/auth/client-access';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
 
@@ -19,8 +20,9 @@ const ALLOWED_OSM_KEYS = ['shop', 'amenity', 'craft'] as const;
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const clientSlug = searchParams.get('client') || 'chella';
+  const clientSlug = (searchParams.get('client') || '').slice(0, 64);
   const segment = searchParams.get('segment') || 'salon';
+  if (!clientSlug) return NextResponse.json({ error: 'client required' }, { status: 400 });
   if (!(ALLOWED_SEGMENTS as readonly string[]).includes(segment)) {
     return NextResponse.json(
       { error: `segment must be one of ${ALLOWED_SEGMENTS.join(', ')}` },
@@ -54,6 +56,9 @@ export async function GET(request: Request) {
       );
     }
   }
+
+  const access = await requireClientAccess(request, clientSlug, { requireScrapePlan: true });
+  if (!access.ok) return access.response;
 
   const areaQuery = `area["name"="${city}"]["admin_level"~"6|7|8"]->.a;`;
   const query = `

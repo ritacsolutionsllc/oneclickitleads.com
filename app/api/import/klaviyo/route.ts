@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireClientAccess } from '@/utils/auth/client-access';
 import { createAdminClient } from '@/utils/supabase/server';
 import { normalizeEmail } from '@/utils/scrub/email';
 
@@ -26,14 +27,13 @@ const FILTER_BY_KIND: Record<Kind, string> = {
 };
 
 export async function POST(req: NextRequest) {
-  const secret = req.headers.get('x-ingest-secret');
-  if (secret !== process.env.INGEST_SECRET)
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-
   const { client_slug, kinds = ['unsubscribed', 'bounced', 'spam'] } = (await req.json()) as {
     client_slug: string;
     kinds?: Kind[];
   };
+
+  const access = await requireClientAccess(req, String(client_slug ?? ''));
+  if (!access.ok) return access.response;
 
   const key = process.env.KLAVIYO_API_KEY;
   if (!key) return NextResponse.json({ error: 'KLAVIYO_API_KEY missing' }, { status: 500 });

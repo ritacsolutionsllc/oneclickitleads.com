@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { requireClientAccess } from '@/utils/auth/client-access';
 import { createAdminClient } from '@/utils/supabase/server';
 import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
 
@@ -12,13 +13,10 @@ import { scrubBatch, scoringInsertFields } from '@/utils/scrub/pipeline';
  *   - Uploaded CSVs from the dashboard
  */
 export async function POST(req: NextRequest) {
-  const secret = req.headers.get('x-ingest-secret');
-  if (secret !== process.env.INGEST_SECRET) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
-  }
-
   const body = await req.json();
   const { client_slug, source, rows } = body ?? {};
+  const access = await requireClientAccess(req, String(client_slug ?? ''));
+  if (!access.ok) return access.response;
   if (!client_slug || !Array.isArray(rows)) {
     return NextResponse.json({ error: 'bad request' }, { status: 400 });
   }
